@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "*.perl": "perl",
+        "*.pl": "perl"
+    }
+}
