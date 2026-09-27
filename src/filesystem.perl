@@ -5,7 +5,7 @@ my $data = '';
 sub open_file {
     my ($file) = @_;
 
-    open(FILE, "<$file")
+    open(FILE, "<:raw", $file)
         or die "Could not open file '$file' $!";
 
     $data = '';
@@ -20,7 +20,7 @@ sub open_file {
 sub create_file {
     my ($file) = @_;
 
-    open(FILE, ">$file")
+    open(FILE, ">:raw", $file)
         or die "Could not create file '$file' $!";
 
     close(FILE);
@@ -29,10 +29,10 @@ sub create_file {
 sub write_file {
     my ($file) = @_;
 
-    open(FILE, ">$file")
+    open(FILE, ">:raw", $file)
         or die "Could not write to file '$file' $!";
 
-    print FILE convert_to_hex($data);
+    print FILE $data;
 
     close(FILE);
 }
@@ -56,7 +56,7 @@ sub set_data {
 }
 
 sub get_data {
-    return convert_from_hex($data);
+    return $data;
 }
 
 sub file_exists {

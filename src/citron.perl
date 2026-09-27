@@ -4,30 +4,62 @@ require "./src/filesystem.perl";
 require "./src/config.perl";
 
 my $arr = {};
+my $VERSION = 1;
+my $MAGIC = "CITRON";
 
 sub serialize {
     my ($arr) = @_;
 
-    my $string = '';
+    my $count = scalar keys %$arr;
+    my $binary = '';
+
+    $binary .= pack("H*", unpack("H*", $MAGIC));
+    $binary .= pack("N", $VERSION);
+    $binary .= pack("N", $count);
 
     foreach my $key (keys %$arr) {
-        $string .= "$key=$arr->{$key};";
+        my $value = $arr->{$key};
+        my $key_hex = unpack("H*", $key);
+        my $value_hex = unpack("H*", $value);
+
+        $binary .= pack("N", length($key));
+        $binary .= pack("H*", $key_hex);
+        $binary .= pack("N", length($value));
+        $binary .= pack("H*", $value_hex);
     }
 
-    return $string;
+    return $binary;
 }
 
 sub deserialize {
-    my ($string) = @_;
+    my ($binary) = @_;
 
     my %arr = ();
+    my $offset = 0;
 
-    my @pairs = split(/;/, $string);
+    my $magic = substr($binary, $offset, length($MAGIC));
+    $offset += length($MAGIC);
 
-    foreach my $pair (@pairs) {
-        next if $pair eq '';
+    return \%arr if $magic ne $MAGIC;
 
-        my ($key, $value) = split(/=/, $pair, 2);
+    my $version = unpack("N", substr($binary, $offset, 4));
+    $offset += 4;
+
+    my $count = unpack("N", substr($binary, $offset, 4));
+    $offset += 4;
+
+    for (my $i = 0; $i < $count; $i++) {
+        my $key_len = unpack("N", substr($binary, $offset, 4));
+        $offset += 4;
+
+        my $key = substr($binary, $offset, $key_len);
+        $offset += $key_len;
+
+        my $value_len = unpack("N", substr($binary, $offset, 4));
+        $offset += 4;
+
+        my $value = substr($binary, $offset, $value_len);
+        $offset += $value_len;
 
         $arr{$key} = $value;
     }
@@ -38,7 +70,6 @@ sub deserialize {
 sub set_data {
     my ($key, $value) = @_;
 
-    # Read the current database contents first
     filesystem::open_file($config::file);
 
     my $current_data = filesystem::get_data();
@@ -47,10 +78,8 @@ sub set_data {
         $arr = deserialize($current_data);
     }
 
-    # Update the requested value
     $arr->{$key} = $value;
 
-    # Serialize and write the updated database
     filesystem::set_data(serialize($arr));
     filesystem::write_file($config::file);
 }
@@ -58,7 +87,6 @@ sub set_data {
 sub get_data {
     my ($key) = @_;
 
-    # Read the database
     filesystem::open_file($config::file);
 
     my $current_data = filesystem::get_data();
@@ -67,7 +95,6 @@ sub get_data {
         return undef;
     }
 
-    # Deserialize the database
     $arr = deserialize($current_data);
 
     return $arr->{$key};

@@ -1,8 +1,8 @@
-# CitronDB
+# CitronDB 🍋
 
 A lightweight flat-file key-value store written in Perl.
 
-CitronDB stores key-value data in a `.citron` file and currently uses hex encoding for storage.
+CitronDB stores key-value data in a `.citron` file using a custom binary format.
 
 ## Project Structure
 
@@ -12,23 +12,31 @@ CitronDB stores key-value data in a `.citron` file and currently uses hex encodi
     ├── main.perl
     ├── config.perl
     ├── filesystem.perl
-    └── citron.perl
+    ├── citron.perl
+    └── cli.perl
 ```
 
-* `main.perl` — Entry point
+* `main.perl` — Entry point and REPL
 * `config.perl` — Configuration
-* `filesystem.perl` — File I/O and hex encoding
-* `citron.perl` — Key-value store logic
+* `filesystem.perl` — Raw binary file I/O
+* `citron.perl` — Key-value store logic and binary format
+* `cli.perl` — Argument parsing
 
 ## How It Works
 
-Data is currently serialized as:
+Data is stored in a custom binary format:
 
 ```text
-key=value;key2=value2;
+[CITRON magic bytes]
+[version - int]
+[record count - int]
+--- per record ---
+[key length - int]
+[key - hex]
+[value length - int]
+[value - hex]
+--- repeat ---
 ```
-
-The serialized data is then hex-encoded before being written to disk.
 
 The default database file is:
 
@@ -37,8 +45,6 @@ mainuser.citron
 ```
 
 If the file doesn't exist, CitronDB creates it.
-
-This is **obfuscation, not encryption**.
 
 ## Configuration
 
@@ -64,16 +70,16 @@ The port is `666` because why not.
 
 ### `filesystem`
 
-| Function                  | Description                  |
-| ------------------------- | ---------------------------- |
-| `file_exists($file)`      | Checks whether a file exists |
-| `create_file($file)`      | Creates an empty file        |
-| `open_file($file)`        | Reads file contents          |
-| `write_file($file)`       | Writes the internal buffer   |
-| `set_data($string)`       | Sets the internal buffer     |
-| `get_data()`              | Returns the decoded buffer   |
-| `convert_to_hex($string)` | Encodes a string as hex      |
-| `convert_from_hex($hex)`  | Decodes hex                  |
+| Function                  | Description                    |
+| ------------------------- | ------------------------------ |
+| `file_exists($file)`      | Checks whether a file exists   |
+| `create_file($file)`      | Creates an empty file          |
+| `open_file($file)`        | Reads raw binary file contents |
+| `write_file($file)`       | Writes the internal buffer     |
+| `set_data($string)`       | Sets the internal buffer       |
+| `get_data()`              | Returns the internal buffer    |
+| `convert_to_hex($string)` | Encodes a string as hex        |
+| `convert_from_hex($hex)`  | Decodes hex                    |
 
 ## Usage
 
@@ -83,24 +89,21 @@ From the project root:
 perl src/main.perl
 ```
 
-Example:
+Drops you into the REPL:
 
 ```text
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-This is a test string
-Test Set Value
-test2: This is a test value 2
-test: This is a test value
+CitronDB v0.1 — type 'help' for commands
+citron> 
 ```
 
-On subsequent runs:
+Or pass a command directly:
 
-```text
-Initiating CitronDB...
-mainuser.citron
-CitronDB already exists
+```bash
+perl src/main.perl set <key> <value>
+perl src/main.perl get <key>
 ```
 
 ## Current Limitations
@@ -111,6 +114,5 @@ CitronDB v0.1 is intentionally simple.
 * The entire database is written back after modification.
 * There is currently no networking.
 * `$host` and `$port` are reserved for future use.
-* The storage format is very basic.
 
 That's it for now.
