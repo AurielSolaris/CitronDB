@@ -10,9 +10,12 @@ require "./src/search_suffix.perl";
 require "./src/search_levenshtein.perl";
 require "./src/search_soundex.perl";
 require "./src/search_substring.perl";
+require "./src/mapreduce.perl";
 
 print "Initiating CitronDB...\n";
 print "$config::file\n";
+
+filesystem::cleanup_tmp($config::file);
 
 if(filesystem::file_exists($config::file)) {
     print "CitronDB already exists\n";
@@ -74,8 +77,18 @@ sub handle_command {
         citron::get_all();
     } elsif($cmd eq "search") {
         handle_search($key, $value);
+    } elsif($cmd eq "mapreduce") {
+        my $results = mapreduce::run_job($key);
+
+        if(!defined $results) {
+            print "Unknown job '$key'. Jobs: ", join(", ", mapreduce::job_names()), "\n";
+        } elsif(scalar keys %$results == 0) {
+            print "No results found.\n";
+        } else {
+            mapreduce::print_results($results);
+        }
     } elsif($cmd eq "help") {
-        print "Commands: set <key> <value>, get <key>, update <key> <value>, delete <key>, list, search <string> <type|default=binary>, exit\n";
+        print "Commands: set <key> <value>, get <key>, update <key> <value>, delete <key>, list, search <string> <type|default=binary>, mapreduce <job>, exit\n";
     } elsif($cmd eq "exit") {
         print "Goodbye.\n";
         exit 0;
@@ -87,7 +100,7 @@ sub handle_command {
 if(cli::arguments(0)) {
     handle_command(cli::arguments(0), cli::arguments(1), cli::arguments(2));
 } else {
-    print "CitronDB v0.2 — type 'help' for commands\n";
+    print "CitronDB v0.3 — type 'help' for commands\n";
     while(1) {
         print "citron> ";
         my $input = <STDIN>;

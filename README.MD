@@ -23,7 +23,8 @@ CitronDB stores key-value data in a `.citron` file using a custom binary format.
     ├── search_suffix.perl
     ├── search_levenshtein.perl
     ├── search_soundex.perl
-    └── search_substring.perl
+    ├── search_substring.perl
+    └── mapreduce.perl
 ```
 
 * `main.perl` — Entry point and REPL
@@ -32,6 +33,7 @@ CitronDB stores key-value data in a `.citron` file using a custom binary format.
 * `citron.perl` — Key-value store logic and binary format
 * `cli.perl` — Argument parsing
 * `search_*.perl` — Search modules
+* `mapreduce.perl` — Batch map-reduce jobs over stored data
 
 ## How It Works
 
@@ -90,11 +92,12 @@ The port is `666` because why not.
 | `file_exists($file)`      | Checks whether a file exists   |
 | `create_file($file)`      | Creates an empty file          |
 | `open_file($file)`        | Reads raw binary file contents |
-| `write_file($file)`       | Writes the internal buffer     |
+| `write_file($file)`       | Writes the internal buffer atomically (temp file + fsync + rename) |
 | `set_data($string)`       | Sets the internal buffer       |
 | `get_data()`              | Returns the internal buffer    |
 | `convert_to_hex($string)` | Encodes a string as hex        |
 | `convert_from_hex($hex)`  | Decodes hex                    |
+| `cleanup_tmp($file)`      | Deletes a stale `.tmp` file    |
 
 ### Search Modules
 
@@ -111,6 +114,19 @@ All search modules expose `search_keys($pattern)`, `search_values($pattern)`, `s
 | `search_levenshtein`    | Edit distance match (default threshold: 3)       |
 | `search_soundex`        | Phonetic match via Soundex                       |
 
+### `mapreduce`
+
+Map-reduce runs as a read-only batch job over the stored data: map each key-value pair to intermediate pairs, group by intermediate key, reduce each group.
+
+| Function              | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| `run($map, $reduce)`  | Runs a map-reduce over all key-value pairs           |
+| `run_job($name)`      | Runs a named built-in job                            |
+| `job_names()`         | Returns available job names                          |
+| `print_results($results)` | Prints results                                   |
+
+Built-in jobs: `count` (record count), `wordcount` (word frequency across values), `sum` (sum of numeric values).
+
 ## Usage
 
 From the project root:
@@ -125,7 +141,7 @@ Drops you into the REPL:
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-CitronDB v0.2 — type 'help' for commands
+CitronDB v0.3 — type 'help' for commands
 citron>
 ```
 
@@ -135,6 +151,7 @@ Or pass a command directly:
 perl src/main.perl set <key> <value>
 perl src/main.perl get <key>
 perl src/main.perl search <string> <type>
+perl src/main.perl mapreduce <job>
 ```
 
 ### Commands
@@ -147,12 +164,13 @@ perl src/main.perl search <string> <type>
 | `delete <key>`                | Delete a key-value pair                                  |
 | `list`                        | Print all key-value pairs                                |
 | `search <string> <type>`      | Search the database (default type: binary)               |
+| `mapreduce <job>`             | Run a map-reduce job (count, wordcount, sum)             |
 | `help`                        | Print available commands                                 |
 | `exit`                        | Exit the REPL                                            |
 
 ## Current Limitations
 
-CitronDB v0.2 is intentionally simple.
+CitronDB v0.3 is intentionally simple.
 
 * The entire database is read before modifying it.
 * The entire database is written back after modification.

@@ -1,5 +1,7 @@
 package filesystem;
 
+use IO::Handle;
+
 my $data = '';
 
 sub open_file {
@@ -29,12 +31,27 @@ sub create_file {
 sub write_file {
     my ($file) = @_;
 
-    open(FILE, ">:raw", $file)
-        or die "Could not write to file '$file' $!";
+    my $tmp = "$file.tmp";
+
+    open(FILE, ">:raw", $tmp)
+        or die "Could not write to file '$tmp' $!";
 
     print FILE $data;
 
+    FILE->sync()
+        or die "Could not sync file '$tmp' $!";
+
     close(FILE);
+
+    rename($tmp, $file)
+        or die "Could not rename '$tmp' to '$file' $!";
+}
+
+sub cleanup_tmp {
+    my ($file) = @_;
+
+    my $tmp = "$file.tmp";
+    unlink($tmp) if -e $tmp;
 }
 
 sub convert_to_hex {
