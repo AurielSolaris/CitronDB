@@ -1,5 +1,7 @@
 # CitronDB 🍋
 
+**Client Initiated Transitive Redundant Onsite Networked DataBase**
+
 A lightweight flat-file key-value store written in Perl.
 
 CitronDB stores key-value data in a `.citron` file using a custom binary format.
@@ -13,7 +15,15 @@ CitronDB stores key-value data in a `.citron` file using a custom binary format.
     ├── config.perl
     ├── filesystem.perl
     ├── citron.perl
-    └── cli.perl
+    ├── cli.perl
+    ├── search_binary.perl
+    ├── search_regex.perl
+    ├── search_fuzzy.perl
+    ├── search_prefix.perl
+    ├── search_suffix.perl
+    ├── search_levenshtein.perl
+    ├── search_soundex.perl
+    └── search_substring.perl
 ```
 
 * `main.perl` — Entry point and REPL
@@ -21,6 +31,7 @@ CitronDB stores key-value data in a `.citron` file using a custom binary format.
 * `filesystem.perl` — Raw binary file I/O
 * `citron.perl` — Key-value store logic and binary format
 * `cli.perl` — Argument parsing
+* `search_*.perl` — Search modules
 
 ## How It Works
 
@@ -62,11 +73,15 @@ The port is `666` because why not.
 
 ### `citron`
 
-| Function                 | Description                         |
-| ------------------------ | ----------------------------------- |
-| `set_data($key, $value)` | Inserts or updates a key-value pair |
-| `get_data($key)`         | Retrieves a value                   |
-| `print_data($key)`       | Prints a value                      |
+| Function                    | Description                         |
+| --------------------------- | ----------------------------------- |
+| `set_data($key, $value)`    | Inserts a key-value pair            |
+| `get_data($key)`            | Retrieves a value                   |
+| `update_data($key, $value)` | Updates an existing key-value pair  |
+| `delete_data($key)`         | Deletes a key-value pair            |
+| `list()`                    | Returns all key-value pairs         |
+| `get_all()`                 | Prints all key-value pairs          |
+| `print_data($key)`          | Prints a value                      |
 
 ### `filesystem`
 
@@ -80,6 +95,21 @@ The port is `666` because why not.
 | `get_data()`              | Returns the internal buffer    |
 | `convert_to_hex($string)` | Encodes a string as hex        |
 | `convert_from_hex($hex)`  | Decodes hex                    |
+
+### Search Modules
+
+All search modules expose `search_keys($pattern)`, `search_values($pattern)`, `search_pairs($pattern)`, and `print_results($results)`.
+
+| Module                  | Description                                      |
+| ----------------------- | ------------------------------------------------ |
+| `search_binary`         | Exact match via binary search                    |
+| `search_substring`      | Partial string match                             |
+| `search_regex`          | Regex pattern match                              |
+| `search_fuzzy`          | Character sequence match                         |
+| `search_prefix`         | Matches strings that start with the pattern      |
+| `search_suffix`         | Matches strings that end with the pattern        |
+| `search_levenshtein`    | Edit distance match (default threshold: 3)       |
+| `search_soundex`        | Phonetic match via Soundex                       |
 
 ## Usage
 
@@ -95,8 +125,8 @@ Drops you into the REPL:
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-CitronDB v0.1 — type 'help' for commands
-citron> 
+CitronDB v0.2 — type 'help' for commands
+citron>
 ```
 
 Or pass a command directly:
@@ -104,11 +134,25 @@ Or pass a command directly:
 ```bash
 perl src/main.perl set <key> <value>
 perl src/main.perl get <key>
+perl src/main.perl search <string> <type>
 ```
+
+### Commands
+
+| Command                       | Description                                              |
+| ----------------------------- | -------------------------------------------------------- |
+| `set <key> <value>`           | Insert a key-value pair                                  |
+| `get <key>`                   | Retrieve a value                                         |
+| `update <key> <value>`        | Update an existing key-value pair                        |
+| `delete <key>`                | Delete a key-value pair                                  |
+| `list`                        | Print all key-value pairs                                |
+| `search <string> <type>`      | Search the database (default type: binary)               |
+| `help`                        | Print available commands                                 |
+| `exit`                        | Exit the REPL                                            |
 
 ## Current Limitations
 
-CitronDB v0.1 is intentionally simple.
+CitronDB v0.2 is intentionally simple.
 
 * The entire database is read before modifying it.
 * The entire database is written back after modification.

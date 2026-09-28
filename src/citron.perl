@@ -100,6 +100,64 @@ sub get_data {
     return $arr->{$key};
 }
 
+sub update_data {
+    my ($key, $value) = @_;
+
+    filesystem::open_file($config::file);
+
+    my $current_data = filesystem::get_data();
+
+    if ($current_data ne '') {
+        $arr = deserialize($current_data);
+    }
+
+    $arr->{$key} = $value;
+
+    filesystem::set_data(serialize($arr));
+    filesystem::write_file($config::file);
+}
+
+sub delete_data {
+    my ($key) = @_;
+
+    filesystem::open_file($config::file);
+
+    my $current_data = filesystem::get_data();
+
+    if ($current_data eq '') {
+        return;
+    }
+
+    $arr = deserialize($current_data);
+
+    delete $arr->{$key};
+
+    filesystem::set_data(serialize($arr));
+    filesystem::write_file($config::file);
+}
+
+sub list {
+    filesystem::open_file($config::file);
+
+    my $current_data = filesystem::get_data();
+
+    if ($current_data eq '') {
+        return {};
+    }
+
+    $arr = deserialize($current_data);
+
+    return $arr;
+}
+
+sub get_all {
+    my $data = list();
+
+    foreach my $key (keys %$data) {
+        print "$key: $data->{$key}\n";
+    }
+}
+
 sub print_data {
     my ($key) = @_;
 
