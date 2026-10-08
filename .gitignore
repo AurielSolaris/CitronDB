@@ -1,1 +1,11 @@
+# CitronDB databases and their temp/lock files
 *.citron
+*.citron.tmp
+*.citron.lock
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~

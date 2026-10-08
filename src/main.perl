@@ -12,18 +12,21 @@ require "./src/search_soundex.perl";
 require "./src/search_substring.perl";
 require "./src/mapreduce.perl";
 
+$config::file = cli::flag("file") if cli::flag("file");
+
 print "Initiating CitronDB...\n";
 print "$config::file\n";
 
-filesystem::cleanup_tmp($config::file);
+my $created = eval { citron::open_db() };
 
-if(filesystem::file_exists($config::file)) {
-    print "CitronDB already exists\n";
-} else {
-    filesystem::create_file($config::file);
+if($@) {
+    print "(error) $@";
+    exit 1;
+} elsif($created) {
     print "CitronDB created\n";
+} else {
+    print "CitronDB already exists\n";
 }
-
 sub handle_search {
     my ($pattern, $type) = @_;
     $type //= "binary";
@@ -58,21 +61,47 @@ sub handle_search {
     }
 }
 
-sub handle_command {
+my %usage = (
+    set       => "set <key> <value>",
+    get       => "get <key> [path]",
+    update    => "update <key> <value>",
+    delete    => "delete <key>",
+    exists    => "exists <key>",
+    search    => "search <string> [type]",
+    mapreduce => "mapreduce <job>",
+    export    => "export <file.json>",
+    import    => "import <file.json>",
+);
+
+sub run_command {
     my ($cmd, $key, $value) = @_;
+
+    if($usage{$cmd} && !defined $key) {
+        print "(error) usage: $usage{$cmd}\n";
+        return;
+    }
+
+    if(($cmd eq "set" || $cmd eq "update") && !defined $value) {
+        print "(error) usage: $usage{$cmd}\n";
+        return;
+    }
 
     if($cmd eq "set") {
         citron::set_data($key, $value);
-        print "Set $key to $value\n";
+        print "OK\n";
     } elsif($cmd eq "get") {
-        my $result = citron::get_data($key);
-        print "$key: $result\n";
+        my ($found, $result) = citron::lookup($key, $value);
+        print $found ? citron::to_text($result) . "\n" : "(nil)\n";
     } elsif($cmd eq "update") {
-        citron::update_data($key, $value);
-        print "Updated $key to $value\n";
+        if(citron::update_data($key, $value)) {
+            print "OK\n";
+        } else {
+            print "(error) no such key '$key' (use set to create it)\n";
+        }
     } elsif($cmd eq "delete") {
-        citron::delete_data($key);
-        print "Deleted $key\n";
+        print "(integer) ", citron::delete_data($key), "\n";
+    } elsif($cmd eq "exists") {
+        print "(integer) ", citron::exists_data($key), "\n";
     } elsif($cmd eq "list") {
         citron::get_all();
     } elsif($cmd eq "search") {
@@ -87,8 +116,16 @@ sub handle_command {
         } else {
             mapreduce::print_results($results);
         }
+    } elsif($cmd eq "export") {
+        my $count = citron::export_json($key);
+        print "Exported $count records to $key\n";
+    } elsif($cmd eq "import") {
+        my $count = citron::import_json($key);
+        print "Imported $count records from $key\n";
     } elsif($cmd eq "help") {
-        print "Commands: set <key> <value>, get <key>, update <key> <value>, delete <key>, list, search <string> <type|default=binary>, mapreduce <job>, exit\n";
+        print "Commands: ", join(", ", (map { $usage{$_} } qw(set get update delete exists search mapreduce export import)), "list", "exit"), "\n";
+        print "Values are JSON (e.g. {\"name\":\"Ada\"}, [1,2], 42, true); anything else is stored as a string.\n";
+        print "Paths reach into JSON values: get user:1 address.city, get user:1 tags.0\n";
     } elsif($cmd eq "exit") {
         print "Goodbye.\n";
         exit 0;
@@ -97,14 +134,22 @@ sub handle_command {
     }
 }
 
-if(cli::arguments(0)) {
+# Errors (corrupt file, bad import, I/O failure) are reported without
+# killing the REPL.
+sub handle_command {
+    eval { run_command(@_); 1 } or print "(error) $@";
+}
+
+if(defined cli::arguments(0)) {
     handle_command(cli::arguments(0), cli::arguments(1), cli::arguments(2));
 } else {
-    print "CitronDB v0.3 — type 'help' for commands\n";
+    print "CitronDB v0.4 — type 'help' for commands\n";
     while(1) {
         print "citron> ";
         my $input = <STDIN>;
+        last unless defined $input;
         chomp $input;
+        $input =~ s/^\s+|\s+$//g;
         next if $input eq '';
 
         my ($cmd, $key, $value) = split(/\s+/, $input, 3);

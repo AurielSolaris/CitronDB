@@ -2,14 +2,20 @@
 
 **Client Initiated Transitive Redundant Onsite Networked DataBase**
 
-A lightweight flat-file key-value store written in Perl.
+A lightweight, embeddable key-value store written in Perl.
 
-CitronDB stores key-value data in a `.citron` file using a custom binary format.
+CitronDB stores JSON values in a single `.citron` file. You talk to it with Redis-style commands; like SQLite, there's no server, just a file.
 
 ## Project Structure
 
 ```text
 .
+├── test/
+│   ├── lib.perl
+│   ├── api.t
+│   ├── format.t
+│   ├── concurrency.t
+│   └── cli.t
 └── src/
     ├── main.perl
     ├── config.perl
@@ -34,10 +40,11 @@ CitronDB stores key-value data in a `.citron` file using a custom binary format.
 * `cli.perl` — Argument parsing
 * `search_*.perl` — Search modules
 * `mapreduce.perl` — Batch map-reduce jobs over stored data
+* `test/` — Test suite
 
 ## How It Works
 
-Data is stored in a custom binary format:
+Data is stored in a custom binary format (version 2):
 
 ```text
 [CITRON magic bytes]
@@ -45,11 +52,31 @@ Data is stored in a custom binary format:
 [record count - int]
 --- per record ---
 [key length - int]
-[key - hex]
+[key - bytes]
 [value length - int]
-[value - hex]
+[value - JSON, UTF-8]
 --- repeat ---
 ```
+
+All ints are 32-bit big-endian.
+
+### Values are JSON
+
+Anything that parses as JSON is stored as JSON; anything else is stored as a plain string.
+
+```text
+citron> set user:1 {"name":"Ada","age":36,"tags":["math","code"]}
+citron> set greeting hello world        <- plain string
+citron> set count 42                    <- number
+citron> set zip "02139"                 <- string (quoted JSON)
+```
+
+### Stability
+
+* **Atomic writes** — every write goes to `<db>.tmp`, is fsynced, then renamed over the database. A crash never leaves a half-written database; leftover temp files are removed on open.
+* **Locking** — readers take a shared lock and writers an exclusive lock on `<db>.lock`, so multiple processes can safely use the same file.
+* **Corruption detection** — a bad header, truncated records or trailing garbage raises an error instead of being read as an empty database (and then overwritten).
+* **Versioning** — files from a newer CitronDB are refused. Version 1 files (plain string values) are read and upgraded to version 2 on the next write.
 
 The default database file is:
 
@@ -57,7 +84,7 @@ The default database file is:
 mainuser.citron
 ```
 
-If the file doesn't exist, CitronDB creates it.
+Use `--file=<path>` to pick another one. If the file doesn't exist, CitronDB creates it.
 
 ## Configuration
 
@@ -75,15 +102,36 @@ The port is `666` because why not.
 
 ### `citron`
 
-| Function                    | Description                         |
-| --------------------------- | ----------------------------------- |
-| `set_data($key, $value)`    | Inserts a key-value pair            |
-| `get_data($key)`            | Retrieves a value                   |
-| `update_data($key, $value)` | Updates an existing key-value pair  |
-| `delete_data($key)`         | Deletes a key-value pair            |
-| `list()`                    | Returns all key-value pairs         |
-| `get_all()`                 | Prints all key-value pairs          |
-| `print_data($key)`          | Prints a value                      |
+All functions die with a message on corruption or I/O errors.
+
+| Function                    | Description                                                        |
+| --------------------------- | ------------------------------------------------------------------ |
+| `open_db()`                 | Creates the database if missing, removes stale temp files          |
+| `set_data($key, $value)`    | Inserts or replaces a key (`$value` is JSON or plain text)         |
+| `get_data($key, $path)`     | Returns the decoded value (optionally at a path), or `undef`       |
+| `lookup($key, $path)`       | Returns `(found, value)`, which tells a missing key apart from JSON `null` |
+| `exists_data($key)`         | Returns 1 if the key exists, else 0                                |
+| `update_data($key, $value)` | Replaces an existing key; returns 0 if the key doesn't exist       |
+| `delete_data($key)`         | Deletes a key; returns 1 if it existed, else 0                     |
+| `list()`                    | Returns all pairs as `{ key => text }` (non-strings as JSON text)  |
+| `list_values()`             | Returns all pairs as `{ key => decoded value }`                    |
+| `export_json($file)`        | Writes all pairs to a JSON file; returns the count                 |
+| `import_json($file)`        | Merges a JSON object into the database in one write; returns the count |
+| `to_text($value)`           | Formats a value for display                                        |
+| `get_all()`                 | Prints all key-value pairs                                         |
+| `print_data($key)`          | Prints a value                                                     |
+
+Embedding it in your own script:
+
+```perl
+require "./src/citron.perl";
+
+$config::file = "app.citron";
+citron::open_db();
+
+citron::set_data("user:1", '{"name":"Ada","tags":["math"]}');
+print citron::get_data("user:1", "tags.0"), "\n";   # math
+```
 
 ### `filesystem`
 
@@ -141,7 +189,7 @@ Drops you into the REPL:
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-CitronDB v0.3 — type 'help' for commands
+CitronDB v0.4 — type 'help' for commands
 citron>
 ```
 
@@ -149,28 +197,44 @@ Or pass a command directly:
 
 ```bash
 perl src/main.perl set <key> <value>
-perl src/main.perl get <key>
+perl src/main.perl get <key> [path]
 perl src/main.perl search <string> <type>
 perl src/main.perl mapreduce <job>
+perl src/main.perl --file=other.citron list
 ```
+
+On Windows (cmd/PowerShell), escape the quotes inside JSON on the command line: `perl src/main.perl set user:1 "{\"name\":\"Ada\"}"`. The REPL needs no escaping.
 
 ### Commands
 
 | Command                       | Description                                              |
 | ----------------------------- | -------------------------------------------------------- |
-| `set <key> <value>`           | Insert a key-value pair                                  |
-| `get <key>`                   | Retrieve a value                                         |
-| `update <key> <value>`        | Update an existing key-value pair                        |
-| `delete <key>`                | Delete a key-value pair                                  |
+| `set <key> <value>`           | Insert or replace a key                                  |
+| `get <key> [path]`            | Retrieve a value, or a field inside it (`address.city`, `tags.0`) |
+| `update <key> <value>`        | Replace an existing key (error if it doesn't exist)      |
+| `delete <key>`                | Delete a key (`(integer) 1` if it existed, else `0`)     |
+| `exists <key>`                | `(integer) 1` if the key exists, else `0`                |
 | `list`                        | Print all key-value pairs                                |
 | `search <string> <type>`      | Search the database (default type: binary)               |
 | `mapreduce <job>`             | Run a map-reduce job (count, wordcount, sum)             |
+| `export <file.json>`          | Write the whole database to a JSON file                  |
+| `import <file.json>`          | Merge a JSON object's keys into the database             |
 | `help`                        | Print available commands                                 |
 | `exit`                        | Exit the REPL                                            |
 
+A missing key prints `(nil)`; errors print `(error) ...` and don't end the REPL.
+
+## Tests
+
+From the project root:
+
+```bash
+prove test/
+```
+
 ## Current Limitations
 
-CitronDB v0.3 is intentionally simple.
+CitronDB v0.4 is intentionally simple.
 
 * The entire database is read before modifying it.
 * The entire database is written back after modification.

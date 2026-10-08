@@ -7,25 +7,21 @@ my $data = '';
 sub open_file {
     my ($file) = @_;
 
-    open(FILE, "<:raw", $file)
+    open(my $fh, "<:raw", $file)
         or die "Could not open file '$file' $!";
 
-    $data = '';
+    $data = do { local $/; <$fh> } // '';
 
-    while(<FILE>) {
-        $data .= $_;
-    }
-
-    close(FILE);
+    close($fh);
 }
 
 sub create_file {
     my ($file) = @_;
 
-    open(FILE, ">:raw", $file)
+    open(my $fh, ">:raw", $file)
         or die "Could not create file '$file' $!";
 
-    close(FILE);
+    close($fh);
 }
 
 sub write_file {
@@ -33,15 +29,16 @@ sub write_file {
 
     my $tmp = "$file.tmp";
 
-    open(FILE, ">:raw", $tmp)
+    open(my $fh, ">:raw", $tmp)
         or die "Could not write to file '$tmp' $!";
 
-    print FILE $data;
+    print $fh $data;
 
-    FILE->sync()
+    $fh->sync()
         or die "Could not sync file '$tmp' $!";
 
-    close(FILE);
+    close($fh)
+        or die "Could not close file '$tmp' $!";
 
     rename($tmp, $file)
         or die "Could not rename '$tmp' to '$file' $!";
