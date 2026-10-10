@@ -98,7 +98,7 @@ _lib.citron_free_keys.restype = None
 
 
 def version():
-    """Version of the loaded C library, e.g. '0.4'."""
+    """Version of the loaded C library, e.g. '0.5.1'."""
     return _lib.citron_version().decode()
 
 

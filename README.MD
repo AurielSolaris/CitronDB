@@ -29,6 +29,7 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 │   ├── format.t
 │   ├── concurrency.t
 │   ├── cli.t
+│   ├── search.t
 │   ├── bindings.t
 │   ├── c/test_citron.c
 │   └── python3/
@@ -41,6 +42,7 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
     ├── filesystem.perl
     ├── citron.perl
     ├── cli.perl
+    ├── search_index.perl
     ├── search_binary.perl
     ├── search_regex.perl
     ├── search_fuzzy.perl
@@ -57,6 +59,7 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 * `filesystem.perl` — Raw binary file I/O
 * `citron.perl` — Key-value store logic and binary format
 * `cli.perl` — Argument parsing
+* `search_index.perl` — In-memory search indexes (hash maps, sorted arrays)
 * `search_*.perl` — Search modules
 * `mapreduce.perl` — Batch map-reduce jobs over stored data
 * `bindings/c/` — C library (the FFI) that implements the file format natively
@@ -99,6 +102,11 @@ citron> set zip "02139"                 <- string (quoted JSON)
 * **Locking** — readers take a shared lock and writers an exclusive lock on `<db>.lock`, so multiple processes can safely use the same file.
 * **Corruption detection** — a bad header, truncated records or trailing garbage raises an error instead of being read as an empty database (and then overwritten).
 * **Versioning** — files from a newer CitronDB are refused. Version 1 files (plain string values) are read and upgraded to version 2 on the next write.
+* **No pointless writes** — `set` or `update` with the value a key already holds doesn't rewrite the file.
+
+### Caching
+
+A process keeps the records it last read or wrote. Each operation still reads the file under its lock, but it only parses the file again if the bytes changed, so writes from other processes are always seen. Repeated reads and searches in one process (the REPL, a script embedding CitronDB) skip the parsing, which is most of the cost.
 
 The default database file is:
 
@@ -171,18 +179,28 @@ print citron::get_data("user:1", "tags.0"), "\n";   # math
 
 ### Search Modules
 
-All search modules expose `search_keys($pattern)`, `search_values($pattern)`, `search_pairs($pattern)`, and `print_results($results)`.
+All search modules expose `search_keys($pattern)`, `search_values($pattern)`, `search_pairs($pattern)`, and `print_results($results)`. Results are `{ key => text }`.
 
-| Module                  | Description                                      |
-| ----------------------- | ------------------------------------------------ |
-| `search_binary`         | Exact match via binary search                    |
-| `search_substring`      | Partial string match                             |
-| `search_regex`          | Regex pattern match                              |
-| `search_fuzzy`          | Character sequence match                         |
-| `search_prefix`         | Matches strings that start with the pattern      |
-| `search_suffix`         | Matches strings that end with the pattern        |
-| `search_levenshtein`    | Edit distance match (default threshold: 3)       |
-| `search_soundex`        | Phonetic match via Soundex                       |
+Most searches don't walk every record. `search_index.perl` builds in-memory indexes over keys and values the first time a search needs them, and keeps them until the data changes:
+
+* **hash maps** for exact values and soundex codes: one lookup
+* **sorted arrays** with binary search (a flat B-tree) for case-insensitive prefixes, and for suffixes via the reversed strings: O(log n + matches)
+* **length buckets** for edit distance: only strings within the threshold's length range are compared, each distinct string once, after a cheap lower-bound filter
+
+| Module               | Description                                       | How it runs                       |
+| -------------------- | ------------------------------------------------- | --------------------------------- |
+| `search_binary`      | Exact match (every key or value equal to it)      | hash lookup                       |
+| `search_prefix`      | Starts with the pattern, ignoring case            | sorted index, binary search       |
+| `search_suffix`      | Ends with the pattern, ignoring case              | sorted index of reversed strings  |
+| `search_soundex`     | Phonetic match via American Soundex               | hash of soundex codes             |
+| `search_levenshtein` | Edit distance match (default threshold: 3)        | length buckets + lower bound      |
+| `search_substring`   | Partial string match                              | scan of cached text               |
+| `search_regex`       | Regex pattern match                               | scan, regex compiled once         |
+| `search_fuzzy`       | Pattern's characters in order, ignoring case      | scan, regex compiled once         |
+
+Substring, regex and fuzzy matches can sit anywhere in a string, so a sorted index can't narrow them down. They scan, but over cached text, with nothing re-read or re-parsed between searches.
+
+Search is part of the Perl implementation; the C and Python bindings don't include it yet.
 
 ### `mapreduce`
 
@@ -216,7 +234,7 @@ make -C bindings/c test     # C tests
 make -C bindings/c example  # build and run examples/c/example.c
 ```
 
-It's one C99 file with no dependencies, so you can also compile `bindings/c/src/citron.c` straight into your project. Define `CITRON_SHARED` when you build or use the Windows DLL.
+It's one C17 file with no dependencies, so you can also compile `bindings/c/src/citron.c` straight into your project. Define `CITRON_SHARED` when you build or use the Windows DLL.
 
 ### C API
 
@@ -307,7 +325,7 @@ Drops you into the REPL:
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-CitronDB v0.4 — type 'help' for commands
+CitronDB v0.5.1 — type 'help' for commands
 citron>
 ```
 
@@ -359,10 +377,11 @@ python -m unittest discover test/python3
 
 ## Current Limitations
 
-CitronDB v0.4 is intentionally simple.
+CitronDB v0.5.1 is intentionally simple.
 
 * The entire database is read before modifying it.
 * The entire database is written back after modification.
+* Search indexes live in memory and are rebuilt per process; they aren't stored in the file.
 * There is currently no networking.
 * `$host` and `$port` are reserved for future use.
 

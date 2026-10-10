@@ -35,6 +35,26 @@ print "nothing exists: ", citron::exists_data("nothing"), ", found: $found\n";
 
 citron::delete_data("nothing");
 
+# searches return { key => text }. Exact, prefix, suffix, soundex and
+# levenshtein searches use in-memory indexes, built on first use and kept
+# until the data changes, so repeated searches don't walk every record.
+require "./src/search_prefix.perl";
+require "./src/search_soundex.perl";
+require "./src/search_levenshtein.perl";
+require "./src/search_substring.perl";
+
+my $users = search_prefix::search_keys("USER:");
+print "\nkeys starting with user: ", join(", ", sort keys %$users), "\n";
+
+my $sounds = search_soundex::search_values("Hallo Wurld");
+print "values sounding like 'Hallo Wurld': ", join(", ", sort keys %$sounds), "\n";
+
+my $close = search_levenshtein::search_values("helo wrld", 2);
+print "values within 2 edits of 'helo wrld': ", join(", ", sort keys %$close), "\n";
+
+my $cobol = search_substring::search_values("cobol");
+print "values containing 'cobol': ", join(", ", sort keys %$cobol), "\n";
+
 print "\nall records:\n";
 citron::get_all();
 

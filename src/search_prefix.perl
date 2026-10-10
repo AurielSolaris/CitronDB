@@ -1,50 +1,37 @@
 package search_prefix;
 
 require "./src/citron.perl";
+require "./src/search_index.perl";
+
+# Case-insensitive prefix match, answered from sorted indexes with binary
+# search instead of testing every record.
+
+sub matching {
+    my ($side, $prefix) = @_;
+
+    my $texts = search_index::texts();
+
+    return search_index::keys_with_prefix($side, $prefix)
+        if search_index::usable_for($prefix);
+
+    my $re = qr/^\Q$prefix\E/i;
+    return grep { ($side eq "key" ? $_ : $texts->{$_}) =~ $re } keys %$texts;
+}
 
 sub search_keys {
     my ($prefix) = @_;
-
-    my $data = citron::list();
-    my %results = ();
-
-    foreach my $key (keys %$data) {
-        if($key =~ /^\Q$prefix\E/i) {
-            $results{$key} = $data->{$key};
-        }
-    }
-
-    return \%results;
+    return search_index::results(search_index::texts(), matching("key", $prefix));
 }
 
 sub search_values {
     my ($prefix) = @_;
-
-    my $data = citron::list();
-    my %results = ();
-
-    foreach my $key (keys %$data) {
-        if($data->{$key} =~ /^\Q$prefix\E/i) {
-            $results{$key} = $data->{$key};
-        }
-    }
-
-    return \%results;
+    return search_index::results(search_index::texts(), matching("value", $prefix));
 }
 
 sub search_pairs {
     my ($prefix) = @_;
-
-    my $data = citron::list();
-    my %results = ();
-
-    foreach my $key (keys %$data) {
-        if($key =~ /^\Q$prefix\E/i || $data->{$key} =~ /^\Q$prefix\E/i) {
-            $results{$key} = $data->{$key};
-        }
-    }
-
-    return \%results;
+    return search_index::results(search_index::texts(),
+                                 matching("key", $prefix), matching("value", $prefix));
 }
 
 sub print_results {

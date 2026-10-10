@@ -142,37 +142,73 @@ sub with_lock {
     return $code->();
 }
 
-sub load {
-    return {} unless filesystem::file_exists($config::file);
+# The last records read or written, kept so that repeated operations don't
+# re-parse the file. It is only reused when the file's bytes are identical
+# to the ones it was parsed from, so writes by other processes are always
+# seen. `generation` changes whenever the records do; indexes built on top
+# (see search_index.perl) use it to know when to rebuild.
+my %cache = (raw => undef, records => undef, texts => undef, generation => 0);
 
-    filesystem::open_file($config::file);
-    return deserialize(filesystem::get_data());
+sub remember {
+    my ($raw, $records) = @_;
+
+    %cache = (raw => $raw, records => $records, texts => undef,
+              generation => $cache{generation} + 1);
+}
+
+# Returns the records as { key => stored JSON text }. The hash is shared
+# with the cache: callers must not modify it.
+sub load {
+    my $raw = '';
+    if (filesystem::file_exists($config::file)) {
+        filesystem::open_file($config::file);
+        $raw = filesystem::get_data();
+    }
+
+    remember($raw, deserialize($raw))
+        unless defined $cache{raw} && $cache{raw} eq $raw;
+
+    return $cache{records};
 }
 
 sub save {
     my ($arr) = @_;
 
-    filesystem::set_data(serialize($arr));
+    my $raw = serialize($arr);
+    filesystem::set_data($raw);
     filesystem::write_file($config::file);
+    remember($raw, $arr);
 }
 
-# Read-modify-write under an exclusive lock. $code gets the records and
-# returns (result, changed); the file is only rewritten when changed.
+# Read-modify-write under an exclusive lock. $code gets a copy of the
+# records and returns (result, changed); the file is only rewritten when
+# changed.
 sub modify {
     my ($code) = @_;
 
     return with_lock(LOCK_EX, sub {
-        my $arr = load();
+        my $arr = { %{ load() } };
         my ($result, $changed) = $code->($arr);
         save($arr) if $changed;
         return $result;
     });
 }
 
+# Runs $code on the records under a shared lock. $code must not modify them.
 sub read_only {
     my ($code) = @_;
 
     return with_lock(LOCK_SH, sub { $code->(load()) });
+}
+
+# Read-only snapshot for searching: ({ key => readable text }, generation).
+# Both come from the cache, so repeated searches cost one file read and no
+# parsing. Callers must not modify the hash.
+sub texts {
+    return read_only(sub {
+        $cache{texts} //= { map { $_ => stored_to_text($_[0]{$_}) } keys %{ $_[0] } };
+        return ($cache{texts}, $cache{generation});
+    });
 }
 
 # Creates the database if missing and removes temp files left by a crash.
@@ -189,6 +225,12 @@ sub open_db {
 
 # --- public API -----------------------------------------------------------
 
+# True if $key already holds $encoded, so a write can be skipped.
+sub unchanged {
+    my ($arr, $key, $encoded) = @_;
+    return defined $arr->{$key} && $arr->{$key} eq $encoded;
+}
+
 # Inserts or replaces a key. $value is raw input (JSON or plain text).
 sub set_data {
     my ($key, $value) = @_;
@@ -198,6 +240,7 @@ sub set_data {
 
     modify(sub {
         my ($arr) = @_;
+        return (1, 0) if unchanged($arr, $key, $encoded);
         $arr->{$key} = $encoded;
         return (1, 1);
     });
@@ -213,6 +256,7 @@ sub update_data {
     return modify(sub {
         my ($arr) = @_;
         return (0, 0) unless exists $arr->{$key};
+        return (1, 0) if unchanged($arr, $key, $encoded);
         $arr->{$key} = $encoded;
         return (1, 1);
     });
@@ -280,12 +324,22 @@ sub get_data {
     return $value;
 }
 
+# Readable form of a stored value, same as to_text(decode_value($text)).
+# Stored values are canonical JSON::PP output, so only strings with escapes
+# need the (slow) decoder: other strings are the bytes between the quotes,
+# and non-strings already read as their JSON text.
+sub stored_to_text {
+    my ($text) = @_;
+
+    return $text if substr($text, 0, 1) ne '"';
+    return substr($text, 1, -1) if index($text, "\\") < 0;
+    return to_text(decode_value($text));
+}
+
 # Returns { key => text } for every record, values in readable form.
 sub list {
-    my $arr = read_only(sub { $_[0] });
-
-    my %data = map { $_ => to_text(decode_value($arr->{$_})) } keys %$arr;
-    return \%data;
+    my ($texts) = texts();
+    return { %$texts };
 }
 
 # Returns { key => decoded value } for every record.

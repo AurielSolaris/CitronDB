@@ -10,7 +10,7 @@
 ifeq ($(origin CC),default)
 CC = gcc
 endif
-CFLAGS ?= -O2 -Wall -Wextra -std=c99
+CFLAGS ?= -O2 -Wall -Wextra -std=c17
 AR ?= ar
 
 BUILD = build

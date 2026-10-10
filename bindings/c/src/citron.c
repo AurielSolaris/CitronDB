@@ -1279,9 +1279,15 @@ static int write_key(citron *db, const char *key, const char *value, int only_ex
         free(enc.p);
         return rc;
     }
-    if (only_existing && !store_find(&s, key, strlen(key), &pos)) {
+    if (!store_find(&s, key, strlen(key), &pos)) {
+        if (only_existing) {
+            free(enc.p);
+            return finish(db, &l, &s, 0, 0);
+        }
+    } else if (s.r[pos].vn == enc.len && !memcmp(s.r[pos].v, enc.p, enc.len)) {
+        /* unchanged: skip the write, like `unchanged` in citron.perl */
         free(enc.p);
-        return finish(db, &l, &s, 0, 0);
+        return finish(db, &l, &s, 0, 1);
     }
     if (store_put(&s, key, strlen(key), enc.p, enc.len)) {
         free(enc.p);

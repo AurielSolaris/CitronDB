@@ -180,7 +180,7 @@ class CitronTest(unittest.TestCase):
         self.assertEqual(self.db.get("k"), 1)
 
     def test_version(self):
-        self.assertEqual(citron.version(), "0.4")
+        self.assertEqual(citron.version(), "0.5.1")
 
 
 if __name__ == "__main__":

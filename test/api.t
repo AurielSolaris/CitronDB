@@ -36,6 +36,22 @@ subtest 'update only touches existing keys' => sub {
     is(citron::get_data("k"), 2, "value updated");
 };
 
+subtest 'writing an unchanged value skips the write' => sub {
+    my $file = fresh_db();
+
+    # a version 1 file would be upgraded by any real write
+    my $v1 = "CITRON" . pack("N", 1) . pack("N", 1) . pack("N", 1) . "k" . pack("N", 5) . "hello";
+    write_raw($file, $v1);
+
+    is(citron::update_data("k", '"hello"'), 1, "update reports success");
+    citron::set_data("k", "hello");
+    is(read_raw($file), $v1, "file untouched");
+
+    citron::set_data("k", "bye");
+    isnt(read_raw($file), $v1, "a real change is written");
+    is(citron::get_data("k"), "bye", "and read back");
+};
+
 subtest 'delete reports whether a key existed' => sub {
     fresh_db();
 

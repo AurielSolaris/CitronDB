@@ -1,6 +1,10 @@
 package search_binary;
 
 require "./src/citron.perl";
+require "./src/search_index.perl";
+
+# Exact match. Keys are looked up in the record hash and values in a
+# value -> keys hash index, so neither walks the records.
 
 sub binary_search {
     my ($sorted_keys, $target) = @_;
@@ -27,48 +31,18 @@ sub binary_search {
 sub search_keys {
     my ($target) = @_;
 
-    my $data = citron::list();
-    my %results = ();
+    my $texts = search_index::texts();
 
-    my @sorted_keys = sort keys %$data;
-
-    my $index = binary_search(\@sorted_keys, $target);
-
-    if($index != -1) {
-        my $key = $sorted_keys[$index];
-        $results{$key} = $data->{$key};
-    }
-
-    return \%results;
+    return search_index::results($texts, exists $texts->{$target} ? ($target) : ());
 }
 
+# Every key whose value is exactly $target.
 sub search_values {
     my ($target) = @_;
 
-    my $data = citron::list();
-    my %results = ();
+    my $texts = search_index::texts();
 
-    my @sorted_keys = sort { $data->{$a} cmp $data->{$b} } keys %$data;
-
-    my $low = 0;
-    my $high = $#sorted_keys;
-
-    while($low <= $high) {
-        my $mid = int(($low + $high) / 2);
-        my $key = $sorted_keys[$mid];
-        my $cmp = $data->{$key} cmp $target;
-
-        if($cmp == 0) {
-            $results{$key} = $data->{$key};
-            last;
-        } elsif($cmp < 0) {
-            $low = $mid + 1;
-        } else {
-            $high = $mid - 1;
-        }
-    }
-
-    return \%results;
+    return search_index::results($texts, search_index::keys_with_value($target));
 }
 
 sub search_pairs {

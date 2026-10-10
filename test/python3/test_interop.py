@@ -278,6 +278,22 @@ class InteropTest(unittest.TestCase):
         with citron.open(db) as handle:
             self.assertEqual(len(handle), 4 * writes)
 
+    def test_unchanged_write_is_skipped(self):
+        """Setting a key to the value it already holds doesn't rewrite the
+        file (so a version 1 file stays version 1)."""
+        db = os.path.join(self.dir, "v1.citron")
+        data = (b"CITRON" + (1).to_bytes(4, "big") + (1).to_bytes(4, "big")
+                + (1).to_bytes(4, "big") + b"k" + (5).to_bytes(4, "big") + b"hello")
+        for path in (db, os.path.join(self.dir, "v1-perl.citron")):
+            with open(path, "wb") as f:
+                f.write(data)
+
+        ops = [("set", "k", "hello"), ("update", "k", '"hello"')]
+        perl_out = run_perl(os.path.join(self.dir, "v1-perl.citron"), ops, self.dir)
+        self.assertEqual(run_binding(db, ops), perl_out)
+        self.assertEqual(read(db), data)
+        self.assertEqual(read(os.path.join(self.dir, "v1-perl.citron")), data)
+
     def test_reads_version_1_files(self):
         db = os.path.join(self.dir, "v1.citron")
         records = [(b"greeting", b"hello"), (b"num", b"42"), (b"bytes", b"caf\xe9")]

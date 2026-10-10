@@ -143,7 +143,7 @@ sub handle_command {
 if(defined cli::arguments(0)) {
     handle_command(cli::arguments(0), cli::arguments(1), cli::arguments(2));
 } else {
-    print "CitronDB v0.4 — type 'help' for commands\n";
+    print "CitronDB v0.5.1 — type 'help' for commands\n";
     while(1) {
         print "citron> ";
         my $input = <STDIN>;
