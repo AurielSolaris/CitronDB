@@ -4,6 +4,9 @@
 *.citron.lock
 *.citron.snapshots/
 
+# ...except the test fixtures written by old releases
+!test/fixtures/*.citron
+
 # Files the examples write
 example.json
 
