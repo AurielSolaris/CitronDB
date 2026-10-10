@@ -136,9 +136,26 @@ def run_binding(db, ops):
                     out.append(str(handle.export_json(s(args[0]))))
                 elif op == "import":
                     out.append(str(handle.import_json(s(args[0]))))
+                elif op == "snapshot":
+                    name = handle.snapshot(s(args[0]) if b(args[0]) else None)
+                    out.append(name.encode().hex())
+                elif op == "snapshots":
+                    out.append(",".join(handle.snapshots()).encode().hex())
+                elif op == "rollback":
+                    out.append(str(int(handle.rollback(s(args[0])))))
+                elif op == "dropsnapshot":
+                    out.append(str(int(handle.drop_snapshot(s(args[0])))))
             except citron.CitronError:
                 out.append("!")
     return out
+
+
+def snapshot_files(db):
+    """{file name: bytes} of a database's snapshot folder."""
+    folder = db + ".snapshots"
+    if not os.path.isdir(folder):
+        return {}
+    return {name: read(os.path.join(folder, name)) for name in sorted(os.listdir(folder))}
 
 
 def read(path):
@@ -166,6 +183,7 @@ class InteropTest(unittest.TestCase):
             self.assertEqual(c, p, "%r: perl %r, c %r" % (op, p, c))
         self.assertEqual(len(c_out), len(perl_out))
         self.assertEqual(read(c_db), read(perl_db), "database files differ")
+        self.assertEqual(snapshot_files(c_db), snapshot_files(perl_db), "snapshot folders differ")
         for name in os.listdir(self.dir):
             if name.startswith("perl-"):
                 self.assertEqual(read(os.path.join(self.dir, "c-" + name[5:])),
@@ -293,6 +311,58 @@ class InteropTest(unittest.TestCase):
         self.assertEqual(run_binding(db, ops), perl_out)
         self.assertEqual(read(db), data)
         self.assertEqual(read(os.path.join(self.dir, "v1-perl.citron")), data)
+
+    def test_snapshots(self):
+        self.compare([
+            ("snapshots",), ("set", "a", "1"), ("snapshot", ""), ("set", "a", "2"),
+            ("snapshot", "beforeMigration"), ("snapshot", ""), ("snapshot", "beforeMigration"),
+            ("snapshot", "42"), ("snapshot", "a-b"), ("snapshot", "../x"), ("snapshots",),
+            ("set", "b", '{"x":[1,2]}'), ("rollback", "1"), ("get", "a", ""), ("get", "b", ""),
+            ("rollback", "beforeMigration"), ("get", "a", ""), ("rollback", "nope"),
+            ("rollback", "../x"), ("dropsnapshot", "2"), ("dropsnapshot", "2"),
+            ("dropsnapshot", "../x"), ("snapshot", ""), ("snapshots",),
+        ])
+
+    def test_snapshots_are_shared_with_perl(self):
+        """Snapshots one implementation makes, the other lists and restores,
+        and numbering carries on across both."""
+        db = os.path.join(self.dir, "shared.citron")
+        out = run_perl(db, [("set", "who", "perl"), ("snapshot", ""), ("snapshot", "fromPerl")], self.dir)
+        self.assertEqual(out, [b"1".hex(), b"fromPerl".hex()])
+
+        with citron.open(db) as handle:
+            self.assertEqual(handle.snapshots(), ["1", "fromPerl"])
+            handle["who"] = "c"
+            self.assertEqual(handle.snapshot(), "2")
+            self.assertEqual(handle.snapshot("fromC"), "fromC")
+            self.assertTrue(handle.rollback("fromPerl"))
+            self.assertEqual(handle["who"], "perl")
+
+        out = run_perl(db, [("snapshots",), ("rollback", "fromC"), ("get", "who", ""), ("snapshot", "")],
+                       self.dir)
+        self.assertEqual(out, [b"1,2,fromC,fromPerl".hex(), "1", b"c".hex(), b"3".hex()])
+
+    def test_concurrent_snapshots_with_perl(self):
+        """Perl and C processes snapshotting at once never share a number."""
+        db = os.path.join(self.dir, "race.citron")
+        run_perl(db, [("set", "k", "v")], self.dir)
+        ops_file = os.path.join(self.dir, "snap_ops.txt")
+        with open(ops_file, "w", newline="\n") as f:
+            f.write((b"snapshot".hex() + "\t" + "\n") * 10)
+        procs = [subprocess.Popen([PERL, os.path.join("test", "python3", "perl_ref.perl"), db, ops_file],
+                                  cwd=ROOT, stdout=subprocess.PIPE) for _ in range(2)]
+        procs += [subprocess.Popen([sys.executable, "-c", (
+            "import sys; sys.path.insert(0, %r); import citron\n"
+            "with citron.open(%r) as db:\n"
+            "    for _ in range(10): print(db.snapshot().encode().hex())\n"
+        ) % (BINDING, db)], stdout=subprocess.PIPE) for _ in range(2)]
+
+        names = []
+        for proc in procs:
+            stdout, _ = proc.communicate()
+            self.assertEqual(proc.returncode, 0)
+            names += [bytes.fromhex(line.decode().strip()).decode() for line in stdout.splitlines()]
+        self.assertEqual(sorted(names, key=int), [str(i) for i in range(1, 41)])
 
     def test_reads_version_1_files(self):
         db = os.path.join(self.dir, "v1.citron")

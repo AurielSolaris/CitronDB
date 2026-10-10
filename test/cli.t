@@ -50,6 +50,20 @@ citron("delete", "a");
 is(citron("import", "$dir/out.json"), "Imported 2 records from $dir/out.json\n", "import");
 is(citron("get", "a"), "1\n", "imported value");
 
+is(citron("snapshots"), "(empty)\n", "no snapshots yet");
+is(citron("snapshot"), "Saved snapshot '1'\n", "numbered snapshot");
+is(citron("snapshot", "beforeChange"), "Saved snapshot 'beforeChange'\n", "named snapshot");
+like(citron("snapshot", "beforeChange"), qr/^\(error\) Snapshot 'beforeChange' already exists/, "name taken");
+like(citron("snapshot", "7"), qr/^\(error\) Invalid snapshot name '7'/, "digits are for numbering");
+is(citron("snapshots"), "1\nbeforeChange\n", "listed");
+citron("set", "a", "changed");
+is(citron("rollback", "beforeChange"), "OK\n", "rollback");
+is(citron("get", "a"), "1\n", "value restored");
+is(citron("rollback", "nope"), "(error) no such snapshot 'nope'\n", "missing snapshot");
+like(citron("rollback"), qr/^\(error\) usage: rollback/, "rollback needs a name");
+is(citron("dropsnapshot", "1"), "(integer) 1\n", "drop");
+is(citron("snapshot"), "Saved snapshot '2'\n", "numbers aren't reused");
+
 open(my $fh, ">:raw", $db) or die;
 print $fh "garbage";
 close($fh);

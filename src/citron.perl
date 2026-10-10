@@ -406,4 +406,160 @@ sub import_json {
     });
 }
 
+
+# --- snapshots ------------------------------------------------------------
+
+# A snapshot is a full copy of the database file in "<db>.snapshots/",
+# stored as "<name>.citron" (so each one is a readable database itself).
+# Unnamed snapshots are numbered 1, 2, 3, ... from a counter that only goes
+# up, so a number is never reused, even after its snapshot is dropped.
+# Named snapshots use letters and digits with at least one letter, so they
+# can't collide with the numbers.
+
+sub snapshot_dir {
+    return "$config::file.snapshots";
+}
+
+sub snapshot_path {
+    my ($name) = @_;
+    return snapshot_dir() . "/$name.citron";
+}
+
+# Any snapshot name, numbered or named. Also keeps names inside the folder.
+sub is_snapshot_name {
+    my ($name) = @_;
+    return defined $name && $name =~ /\A[A-Za-z0-9]+\z/;
+}
+
+# Numbers first in order, then names sorted.
+sub snapshot_order {
+    my ($x, $y) = @_;
+    my ($xn, $yn) = map { /\A[0-9]+\z/ ? 1 : 0 } $x, $y;
+
+    return $yn <=> $xn if $xn != $yn;
+    return length($x) <=> length($y) || $x cmp $y if $xn;
+    return $x cmp $y;
+}
+
+sub snapshot_names {
+    my $dir = snapshot_dir();
+    return () unless -d $dir;
+
+    opendir(my $dh, $dir) or die "Could not read '$dir': $!\n";
+    my @names = map { /\A([A-Za-z0-9]+)\.citron\z/ ? $1 : () } readdir($dh);
+    closedir($dh);
+
+    return sort { snapshot_order($a, $b) } @names;
+}
+
+# Adds one to a decimal string of any length, so numbering never overflows
+# or loses precision.
+sub increment {
+    my ($n) = @_;
+
+    my $i = length($n) - 1;
+    while ($i >= 0 && substr($n, $i, 1) eq "9") {
+        substr($n, $i, 1, "0");
+        $i--;
+    }
+    return "1$n" if $i < 0;
+
+    substr($n, $i, 1, substr($n, $i, 1) + 1);
+    return $n;
+}
+
+# Next number: one past the counter, and past any numbered snapshot (in case
+# the counter file was lost). Saves the new counter.
+sub next_snapshot_number {
+    my $counter = snapshot_dir() . "/counter";
+    my $last = "0";
+
+    if (-e $counter) {
+        filesystem::open_file($counter);
+        $last = filesystem::get_data();
+        die "Corrupt snapshot counter '$counter'\n" unless $last =~ /\A[0-9]+\z/;
+        $last =~ s/\A0+(?=[0-9])//;
+    }
+
+    for my $name (snapshot_names()) {
+        $last = $name if $name =~ /\A[0-9]+\z/ && snapshot_order($name, $last) > 0;
+    }
+
+    my $next = increment($last);
+    filesystem::set_data($next);
+    filesystem::write_file($counter);
+    return $next;
+}
+
+# Saves the current data as a snapshot. Without a name it gets the next
+# number. Returns the snapshot's name.
+sub create_snapshot {
+    my ($name) = @_;
+
+    die "Invalid snapshot name '$name': use letters and digits, with at least one letter\n"
+        if defined $name && !(is_snapshot_name($name) && $name =~ /[A-Za-z]/);
+
+    return with_lock(LOCK_EX, sub {
+        my $records = load();   # refuses a corrupt database
+        my $raw = $cache{raw} ne '' ? $cache{raw} : serialize($records);
+
+        my $dir = snapshot_dir();
+        mkdir($dir) or -d $dir or die "Could not create '$dir': $!\n";
+
+        if (defined $name) {
+            die "Snapshot '$name' already exists\n" if -e snapshot_path($name);
+        } else {
+            $name = next_snapshot_number();
+        }
+
+        filesystem::set_data($raw);
+        filesystem::write_file(snapshot_path($name));
+        return "$name";
+    });
+}
+
+# Returns every snapshot name: numbered ones in order, then named ones.
+sub list_snapshots {
+    return with_lock(LOCK_SH, sub { snapshot_names() });
+}
+
+# Replaces the database with a snapshot (the snapshot is kept). Returns 0 if
+# there is no such snapshot. A corrupt snapshot is refused and the database
+# left untouched.
+sub rollback {
+    my ($name) = @_;
+
+    return 0 unless is_snapshot_name($name);
+
+    return with_lock(LOCK_EX, sub {
+        my $path = snapshot_path($name);
+        return 0 unless -e $path;
+
+        filesystem::open_file($path);
+        my $raw = filesystem::get_data();
+        my $records = eval { deserialize($raw) };
+        die "Snapshot '$name' is unusable: $@" if $@;
+
+        filesystem::set_data($raw);
+        filesystem::write_file($config::file);
+        remember($raw, $records);
+        return 1;
+    });
+}
+
+# Deletes a snapshot. Returns 1 if it existed, else 0.
+sub delete_snapshot {
+    my ($name) = @_;
+
+    return 0 unless is_snapshot_name($name);
+
+    return with_lock(LOCK_EX, sub {
+        my $path = snapshot_path($name);
+        return 0 unless -e $path;
+
+        unlink($path) or die "Could not delete '$path': $!\n";
+        return 1;
+    });
+}
+
 666;

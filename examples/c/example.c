@@ -68,6 +68,25 @@ int main(void)
     check(db, citron_delete(db, "nothing"));
     print_value(db, "nothing", NULL);
 
+    /* snapshots: save the data, change it, roll back to exactly that
+     * version. Without a name a snapshot is numbered 1, 2, 3, ... */
+    char *number;
+    check(db, citron_drop_snapshot(db, "beforeCleanup")); /* so the example can run again */
+    check(db, citron_snapshot(db, "beforeCleanup", NULL));
+    check(db, citron_snapshot(db, NULL, &number));
+    printf("\nsnapshots:");
+    check(db, citron_snapshots(db, &keys, &count));
+    for (i = 0; i < count; i++)
+        printf(" %s", keys[i]);
+    citron_free_keys(keys);
+    printf(" (just made %s)\n", number);
+    citron_free(number);
+
+    check(db, citron_delete(db, "user:2"));
+    printf("after delete, user:2 exists: %d\n", check(db, citron_exists(db, "user:2")));
+    check(db, citron_rollback(db, "beforeCleanup"));
+    printf("after rollback, user:2 exists: %d\n", check(db, citron_exists(db, "user:2")));
+
     printf("\nall keys:\n");
     check(db, citron_keys(db, &keys, &count));
     for (i = 0; i < count; i++)

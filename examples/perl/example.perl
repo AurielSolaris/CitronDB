@@ -55,6 +55,18 @@ print "values within 2 edits of 'helo wrld': ", join(", ", sort keys %$close), "
 my $cobol = search_substring::search_values("cobol");
 print "values containing 'cobol': ", join(", ", sort keys %$cobol), "\n";
 
+# snapshots: save the data, change it, roll back to exactly that version.
+# Without a name a snapshot is numbered 1, 2, 3, ...
+citron::delete_snapshot("beforeCleanup");   # so the example can run again
+citron::create_snapshot("beforeCleanup");
+my $number = citron::create_snapshot();
+print "\nsnapshots: ", join(", ", citron::list_snapshots()), " (just made $number)\n";
+
+citron::delete_data("user:2");
+print "after delete, user:2 exists: ", citron::exists_data("user:2"), "\n";
+citron::rollback("beforeCleanup");
+print "after rollback, user:2 exists: ", citron::exists_data("user:2"), "\n";
+
 print "\nall records:\n";
 citron::get_all();
 

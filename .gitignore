@@ -2,6 +2,7 @@
 *.citron
 *.citron.tmp
 *.citron.lock
+*.citron.snapshots/
 
 # Files the examples write
 example.json

@@ -81,6 +81,10 @@ for _name, _args in {
     "citron_import": [_p, _s],
     "citron_export_json": [_p, _s],
     "citron_import_json": [_p, _s],
+    "citron_snapshot": [_p, _s, ctypes.POINTER(_p)],
+    "citron_snapshots": [_p, ctypes.POINTER(_p), ctypes.POINTER(ctypes.c_size_t)],
+    "citron_rollback": [_p, _s],
+    "citron_drop_snapshot": [_p, _s],
 }.items():
     getattr(_lib, _name).argtypes = _args
     getattr(_lib, _name).restype = _int
@@ -98,7 +102,7 @@ _lib.citron_free_keys.restype = None
 
 
 def version():
-    """Version of the loaded C library, e.g. '0.5.1'."""
+    """Version of the loaded C library, e.g. '0.5.2'."""
     return _lib.citron_version().decode()
 
 
@@ -261,6 +265,39 @@ class Citron:
         """Merges a JSON file's top-level object into the database in one
         write. Returns the count."""
         return self._check(_lib.citron_import_json(self._handle(), _path(file)))
+
+    # --- snapshots (mirrors citron.perl) ----------------------------------
+
+    def snapshot(self, name=None):
+        """Saves the current data as a snapshot and returns its name. Without
+        a name it gets the next number ("1", "2", ...); a name must be letters
+        and digits with at least one letter, and must not exist yet."""
+        out = _p()
+        self._check(_lib.citron_snapshot(
+            self._handle(), None if name is None else _bytes(name), ctypes.byref(out)))
+        return _str(_take_string(out))
+
+    def snapshots(self):
+        """All snapshot names: numbered ones in order, then named ones."""
+        out = _p()
+        self._check(_lib.citron_snapshots(self._handle(), ctypes.byref(out), None))
+        try:
+            array = ctypes.cast(out, ctypes.POINTER(ctypes.c_char_p))
+            names = []
+            while array[len(names)] is not None:
+                names.append(_str(array[len(names)]))
+            return names
+        finally:
+            _lib.citron_free_keys(out)
+
+    def rollback(self, name):
+        """Replaces the database with a snapshot, atomically (the snapshot is
+        kept). Returns False if there's no such snapshot."""
+        return bool(self._check(_lib.citron_rollback(self._handle(), _bytes(name))))
+
+    def drop_snapshot(self, name):
+        """Deletes a snapshot. Returns True if it existed."""
+        return bool(self._check(_lib.citron_drop_snapshot(self._handle(), _bytes(name))))
 
     # --- dict-style access ------------------------------------------------
 

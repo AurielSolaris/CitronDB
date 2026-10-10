@@ -3,6 +3,7 @@
  * Mirrors src/citron.perl and src/filesystem.perl; see include/citron.h.
  */
 #define CITRON_BUILD
+#define _CRT_SECURE_NO_WARNINGS /* MSVC: fopen/strerror are fine here */
 #include "citron.h"
 
 #include <errno.h>
@@ -18,6 +19,7 @@
 #  include <windows.h>
 #  include <io.h>
 #else
+#  include <dirent.h>
 #  include <fcntl.h>
 #  include <sys/file.h>
 #  include <unistd.h>
@@ -953,31 +955,34 @@ static int file_exists(const char *path)
     return stat(path, &st) == 0;
 }
 
-static int load(citron *db, store *s)
+/* Reads a whole file into b. */
+static int read_file(citron *db, const char *path, buf *b)
 {
     FILE *f;
-    buf b = { 0 };
     char chunk[65536];
     size_t n;
+
+    if (!(f = fopen(path, "rb")))
+        return fail(db, CITRON_EIO, "Could not open file '%s': %s", path, strerror(errno));
+    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
+        buf_put(b, chunk, n);
+    if (ferror(f)) {
+        fclose(f);
+        return fail(db, CITRON_EIO, "Could not read file '%s'", path);
+    }
+    fclose(f);
+    return b->oom ? fail_nomem(db) : CITRON_OK;
+}
+
+static int load(citron *db, store *s)
+{
+    buf b = { 0 };
     int rc;
 
     if (!file_exists(db->path))
         return CITRON_OK;
-    if (!(f = fopen(db->path, "rb")))
-        return fail(db, CITRON_EIO, "Could not open file '%s': %s", db->path, strerror(errno));
-    while ((n = fread(chunk, 1, sizeof chunk, f)) > 0)
-        buf_put(&b, chunk, n);
-    if (ferror(f)) {
-        fclose(f);
-        free(b.p);
-        return fail(db, CITRON_EIO, "Could not read file '%s'", db->path);
-    }
-    fclose(f);
-    if (b.oom) {
-        free(b.p);
-        return fail_nomem(db);
-    }
-    rc = deserialize(db, (const unsigned char *)b.p, b.len, s);
+    if (!(rc = read_file(db, db->path, &b)))
+        rc = deserialize(db, (const unsigned char *)b.p, b.len, s);
     free(b.p);
     return rc;
 }
@@ -991,38 +996,59 @@ static int replace_file(const char *from, const char *to)
 #endif
 }
 
-/* Writes atomically: temp file, fsync, rename over the database. */
-static int save(citron *db, const store *s)
+/* Writes atomically: "<path>.tmp", fsync, rename over path (same as
+ * write_file in filesystem.perl). */
+static int write_atomic(citron *db, const char *path, const char *data, size_t len)
 {
-    buf b = { 0 };
+    buf tmp = { 0 };
     FILE *f;
     int ok;
 
-    if (serialize(s, &b)) {
-        free(b.p);
+    buf_put(&tmp, path, strlen(path));
+    buf_put(&tmp, ".tmp", 4);
+    if (tmp.oom) {
+        free(tmp.p);
         return fail_nomem(db);
     }
-    if (!(f = fopen(db->tmp_path, "wb"))) {
-        free(b.p);
-        return fail(db, CITRON_EIO, "Could not write to file '%s': %s", db->tmp_path,
-                    strerror(errno));
+    if (!(f = fopen(tmp.p, "wb"))) {
+        fail(db, CITRON_EIO, "Could not write to file '%s': %s", tmp.p, strerror(errno));
+        free(tmp.p);
+        return CITRON_EIO;
     }
-    ok = fwrite(b.p, 1, b.len, f) == b.len && fflush(f) == 0;
-    free(b.p);
+    ok = fwrite(data, 1, len, f) == len && fflush(f) == 0;
 #ifdef _WIN32
     ok = ok && _commit(_fileno(f)) == 0;
 #else
     ok = ok && fsync(fileno(f)) == 0;
 #endif
     if (fclose(f) != 0 || !ok) {
-        remove(db->tmp_path);
-        return fail(db, CITRON_EIO, "Could not write to file '%s'", db->tmp_path);
+        remove(tmp.p);
+        fail(db, CITRON_EIO, "Could not write to file '%s'", tmp.p);
+        free(tmp.p);
+        return CITRON_EIO;
     }
-    if (replace_file(db->tmp_path, db->path)) {
-        remove(db->tmp_path);
-        return fail(db, CITRON_EIO, "Could not rename '%s' to '%s'", db->tmp_path, db->path);
+    if (replace_file(tmp.p, path)) {
+        remove(tmp.p);
+        fail(db, CITRON_EIO, "Could not rename '%s' to '%s'", tmp.p, path);
+        free(tmp.p);
+        return CITRON_EIO;
     }
+    free(tmp.p);
     return CITRON_OK;
+}
+
+static int save(citron *db, const store *s)
+{
+    buf b = { 0 };
+    int rc;
+
+    if (serialize(s, &b)) {
+        free(b.p);
+        return fail_nomem(db);
+    }
+    rc = write_atomic(db, db->path, b.p, b.len);
+    free(b.p);
+    return rc;
 }
 
 /* A lock on "<db>.lock", compatible with Perl's flock(). A separate lock
@@ -1670,6 +1696,438 @@ int citron_import_json(citron *db, const char *file)
         return fail(db, CITRON_EINVALID, "'%s' must contain a JSON object at the top level", file);
     }
     return import_object(db, &v);
+}
+
+/* --- snapshots ---------------------------------------------------------- */
+
+/* Same layout and rules as the snapshot functions in citron.perl: full
+ * copies of the database in "<db>.snapshots/<name>.citron", numbered ones
+ * counted up from "<db>.snapshots/counter" (a decimal string, so it never
+ * overflows), named ones letters and digits with at least one letter. */
+
+static int is_alnum(char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+}
+
+static int all_digits(const char *s, size_t n)
+{
+    size_t i;
+    for (i = 0; i < n; i++)
+        if (s[i] < '0' || s[i] > '9')
+            return 0;
+    return n > 0;
+}
+
+/* Any snapshot name, numbered or named. Also keeps names inside the folder. */
+static int is_snapshot_name(const char *name)
+{
+    const char *p;
+    if (!name || !*name)
+        return 0;
+    for (p = name; *p; p++)
+        if (!is_alnum(*p))
+            return 0;
+    return 1;
+}
+
+/* Numbers first in order, then names sorted. */
+static int snapshot_cmp(const char *x, const char *y)
+{
+    size_t xl = strlen(x), yl = strlen(y);
+    int xn = all_digits(x, xl), yn = all_digits(y, yl);
+
+    if (xn != yn)
+        return yn - xn;
+    if (xn && xl != yl)
+        return xl < yl ? -1 : 1;
+    return strcmp(x, y);
+}
+
+static int snapshot_qsort_cmp(const void *a, const void *b)
+{
+    return snapshot_cmp(*(char *const *)a, *(char *const *)b);
+}
+
+static char *snapshot_dir(const citron *db)
+{
+    return concat(db->path, ".snapshots");
+}
+
+static char *snapshot_file(const citron *db, const char *name)
+{
+    buf b = { 0 };
+    buf_put(&b, db->path, strlen(db->path));
+    buf_put(&b, ".snapshots/", 11);
+    buf_put(&b, name, strlen(name));
+    buf_put(&b, ".citron", 7);
+    if (b.oom) {
+        free(b.p);
+        return NULL;
+    }
+    return b.p;
+}
+
+static int is_dir(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+}
+
+/* Is file "<name>.citron" with an alphanumeric name? Sets the name length. */
+static int snapshot_file_name(const char *file, size_t *name_len)
+{
+    size_t n = strlen(file), i;
+    if (n <= 7 || strcmp(file + n - 7, ".citron"))
+        return 0;
+    for (i = 0; i < n - 7; i++)
+        if (!is_alnum(file[i]))
+            return 0;
+    *name_len = n - 7;
+    return 1;
+}
+
+/* A NULL-terminated list of strings (freed with citron_free_keys). */
+typedef struct {
+    char **v;
+    size_t n, cap;
+} names;
+
+static int names_add(names *l, const char *name, size_t len)
+{
+    if (l->n + 2 > l->cap) {
+        size_t cap = l->cap ? l->cap * 2 : 16;
+        char **v = realloc(l->v, cap * sizeof *v);
+        if (!v)
+            return -1;
+        l->v = v;
+        l->cap = cap;
+    }
+    if (!(l->v[l->n] = dup_bytes(name, len)))
+        return -1;
+    l->v[++l->n] = NULL;
+    return 0;
+}
+
+/* Sorted snapshot names, possibly none. */
+static int snapshot_names(citron *db, names *out)
+{
+    char *dir = snapshot_dir(db);
+    int rc = CITRON_OK;
+
+    memset(out, 0, sizeof *out);
+    if (!dir || !(out->v = calloc(16, sizeof *out->v))) {
+        free(dir);
+        return fail_nomem(db);
+    }
+    out->cap = 16;
+
+    if (is_dir(dir)) {
+#ifdef _WIN32
+        WIN32_FIND_DATAA fd;
+        char *pattern = concat(dir, "/*");
+        HANDLE h = pattern ? FindFirstFileA(pattern, &fd) : INVALID_HANDLE_VALUE;
+        free(pattern);
+        if (h == INVALID_HANDLE_VALUE) {
+            rc = fail(db, CITRON_EIO, "Could not read '%s'", dir);
+        } else {
+            do {
+                size_t len;
+                if (snapshot_file_name(fd.cFileName, &len) && names_add(out, fd.cFileName, len)) {
+                    rc = fail_nomem(db);
+                    break;
+                }
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+        }
+#else
+        DIR *d = opendir(dir);
+        struct dirent *e;
+        if (!d) {
+            rc = fail(db, CITRON_EIO, "Could not read '%s': %s", dir, strerror(errno));
+        } else {
+            while ((e = readdir(d))) {
+                size_t len;
+                if (snapshot_file_name(e->d_name, &len) && names_add(out, e->d_name, len)) {
+                    rc = fail_nomem(db);
+                    break;
+                }
+            }
+            closedir(d);
+        }
+#endif
+    }
+    free(dir);
+
+    if (rc) {
+        citron_free_keys(out->v);
+        memset(out, 0, sizeof *out);
+        return rc;
+    }
+    qsort(out->v, out->n, sizeof *out->v, snapshot_qsort_cmp);
+    return CITRON_OK;
+}
+
+/* Adds one to a decimal string of any length. */
+static char *increment(const char *n)
+{
+    size_t len = strlen(n), i;
+    char *r = malloc(len + 2);
+
+    if (!r)
+        return NULL;
+    r[0] = '0';
+    memcpy(r + 1, n, len + 1);
+    for (i = len; i > 0 && r[i] == '9'; i--)
+        r[i] = '0';
+    r[i]++;
+    if (r[0] == '0')
+        memmove(r, r + 1, len + 1);
+    return r;
+}
+
+/* Next number: one past the counter and past any numbered snapshot (in case
+ * the counter file was lost). Saves the new counter. */
+static int next_snapshot_number(citron *db, char **out)
+{
+    char *dir = snapshot_dir(db), *counter = dir ? concat(dir, "/counter") : NULL;
+    char *last = NULL, *next = NULL;
+    names list;
+    size_t i;
+    int rc = CITRON_OK;
+
+    *out = NULL;
+    if (!counter) {
+        free(dir);
+        return fail_nomem(db);
+    }
+
+    if (file_exists(counter)) {
+        buf b = { 0 };
+        size_t start = 0;
+        if ((rc = read_file(db, counter, &b))) {
+            free(b.p);
+            goto done;
+        }
+        if (!all_digits(b.p ? b.p : "", b.len)) {
+            free(b.p);
+            rc = fail(db, CITRON_ECORRUPT, "Corrupt snapshot counter '%s'", counter);
+            goto done;
+        }
+        while (start + 1 < b.len && b.p[start] == '0')
+            start++;
+        last = dup_bytes(b.p + start, b.len - start);
+        free(b.p);
+    } else {
+        last = dup_bytes("0", 1);
+    }
+    if (!last) {
+        rc = fail_nomem(db);
+        goto done;
+    }
+
+    if ((rc = snapshot_names(db, &list)))
+        goto done;
+    for (i = 0; i < list.n; i++) {
+        if (all_digits(list.v[i], strlen(list.v[i])) && snapshot_cmp(list.v[i], last) > 0) {
+            char *copy = dup_bytes(list.v[i], strlen(list.v[i]));
+            if (!copy) {
+                rc = fail_nomem(db);
+                break;
+            }
+            free(last);
+            last = copy;
+        }
+    }
+    citron_free_keys(list.v);
+    if (rc)
+        goto done;
+
+    if (!(next = increment(last))) {
+        rc = fail_nomem(db);
+        goto done;
+    }
+    if ((rc = write_atomic(db, counter, next, strlen(next)))) {
+        free(next);
+        next = NULL;
+    }
+
+done:
+    free(last);
+    free(dir);
+    free(counter);
+    *out = next;
+    return rc;
+}
+
+static int make_dir(citron *db, const char *dir)
+{
+#ifdef _WIN32
+    if (CreateDirectoryA(dir, NULL) || is_dir(dir))
+        return CITRON_OK;
+#else
+    if (mkdir(dir, 0777) == 0 || is_dir(dir))
+        return CITRON_OK;
+#endif
+    return fail(db, CITRON_EIO, "Could not create '%s'", dir);
+}
+
+int citron_snapshot(citron *db, const char *name, char **out_name)
+{
+    const char *p;
+    int has_letter = 0, rc;
+    lockh l;
+    store s = { 0 };
+    buf raw = { 0 };
+    char *dir = NULL, *file = NULL, *number = NULL;
+
+    if (out_name)
+        *out_name = NULL;
+    CHECK_ARGS(db, 1);
+    if (name) {
+        for (p = name; *p; p++)
+            has_letter |= (*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z');
+        if (!is_snapshot_name(name) || !has_letter)
+            return fail(db, CITRON_EINVALID,
+                        "Invalid snapshot name '%s': use letters and digits, with at least one letter",
+                        name);
+    }
+
+    if ((rc = lock_acquire(db, 1, &l)))
+        return rc;
+
+    /* the current bytes, refusing a corrupt database */
+    if (file_exists(db->path) && (rc = read_file(db, db->path, &raw)))
+        goto done;
+    if ((rc = deserialize(db, (const unsigned char *)(raw.p ? raw.p : ""), raw.len, &s)))
+        goto done;
+    if (raw.len == 0 && serialize(&s, &raw)) {
+        rc = fail_nomem(db);
+        goto done;
+    }
+
+    if (!(dir = snapshot_dir(db))) {
+        rc = fail_nomem(db);
+        goto done;
+    }
+    if ((rc = make_dir(db, dir)))
+        goto done;
+
+    if (name) {
+        if (!(file = snapshot_file(db, name))) {
+            rc = fail_nomem(db);
+            goto done;
+        }
+        if (file_exists(file)) {
+            rc = fail(db, CITRON_EINVALID, "Snapshot '%s' already exists", name);
+            goto done;
+        }
+    } else {
+        if ((rc = next_snapshot_number(db, &number)))
+            goto done;
+        name = number;
+        if (!(file = snapshot_file(db, name))) {
+            rc = fail_nomem(db);
+            goto done;
+        }
+    }
+
+    if ((rc = write_atomic(db, file, raw.p, raw.len)))
+        goto done;
+    if (out_name && !(*out_name = dup_bytes(name, strlen(name))))
+        rc = fail_nomem(db);
+
+done:
+    store_free(&s);
+    free(raw.p);
+    free(dir);
+    free(file);
+    free(number);
+    lock_release(&l);
+    return rc;
+}
+
+int citron_snapshots(citron *db, char ***out, size_t *count)
+{
+    names list;
+    lockh l;
+    int rc;
+
+    if (out)
+        *out = NULL;
+    if (count)
+        *count = 0;
+    CHECK_ARGS(db, out);
+    if ((rc = lock_acquire(db, 0, &l)))
+        return rc;
+    rc = snapshot_names(db, &list);
+    lock_release(&l);
+    if (rc)
+        return rc;
+    *out = list.v;
+    if (count)
+        *count = list.n;
+    return CITRON_OK;
+}
+
+int citron_rollback(citron *db, const char *name)
+{
+    lockh l;
+    store s = { 0 };
+    buf raw = { 0 };
+    char *file;
+    int rc;
+
+    CHECK_ARGS(db, 1);
+    if (!is_snapshot_name(name))
+        return 0;
+    if (!(file = snapshot_file(db, name)))
+        return fail_nomem(db);
+    if ((rc = lock_acquire(db, 1, &l))) {
+        free(file);
+        return rc;
+    }
+
+    if (!file_exists(file)) {
+        rc = 0;
+    } else if (!(rc = read_file(db, file, &raw))) {
+        rc = deserialize(db, (const unsigned char *)(raw.p ? raw.p : ""), raw.len, &s);
+        if (rc && rc != CITRON_ENOMEM) {
+            char inner[sizeof db->err];
+            memcpy(inner, db->err, sizeof inner);
+            fail(db, rc, "Snapshot '%s' is unusable: %s", name, inner);
+        }
+        if (!rc && !(rc = write_atomic(db, db->path, raw.p ? raw.p : "", raw.len)))
+            rc = 1;
+    }
+
+    store_free(&s);
+    free(raw.p);
+    free(file);
+    lock_release(&l);
+    return rc;
+}
+
+int citron_drop_snapshot(citron *db, const char *name)
+{
+    lockh l;
+    char *file;
+    int rc = 0;
+
+    CHECK_ARGS(db, 1);
+    if (!is_snapshot_name(name))
+        return 0;
+    if (!(file = snapshot_file(db, name)))
+        return fail_nomem(db);
+    if ((rc = lock_acquire(db, 1, &l))) {
+        free(file);
+        return rc;
+    }
+    if (file_exists(file))
+        rc = remove(file) == 0 ? 1 : fail(db, CITRON_EIO, "Could not delete '%s'", file);
+    free(file);
+    lock_release(&l);
+    return rc;
 }
 
 void citron_free(void *ptr)

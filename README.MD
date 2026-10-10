@@ -25,12 +25,19 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 │   └── python3/example.py
 ├── test/
 │   ├── lib.perl
+│   ├── worker.perl
 │   ├── api.t
+│   ├── crud.t
 │   ├── format.t
+│   ├── compat.t
+│   ├── durability.t
 │   ├── concurrency.t
+│   ├── snapshot.t
+│   ├── recovery.t
 │   ├── cli.t
 │   ├── search.t
 │   ├── bindings.t
+│   ├── fixtures/
 │   ├── c/test_citron.c
 │   └── python3/
 │       ├── test_citron.py
@@ -104,6 +111,27 @@ citron> set zip "02139"                 <- string (quoted JSON)
 * **Versioning** — files from a newer CitronDB are refused. Version 1 files (plain string values) are read and upgraded to version 2 on the next write.
 * **No pointless writes** — `set` or `update` with the value a key already holds doesn't rewrite the file.
 
+### Snapshots
+
+A snapshot saves the whole database at a point in time, and `rollback` restores exactly that version.
+
+```text
+citron> snapshot                  <- numbered: 1, then 2, 3, ...
+Saved snapshot '1'
+citron> snapshot beforeMigration  <- named
+Saved snapshot 'beforeMigration'
+citron> snapshots
+1
+beforeMigration
+citron> rollback beforeMigration
+OK
+```
+
+* **Numbered or named** — without a name, a snapshot gets the next number, counting up from 1 with no upper limit. A number is never reused, even after its snapshot is dropped. Names are letters and digits with at least one letter, so they can't clash with numbers. A name that's taken is refused, never overwritten.
+* **Exact and atomic** — a snapshot is a byte-for-byte copy of the database. Rollback swaps it in with the same temp file + fsync + rename as any write, under the write lock. A crash mid-rollback leaves either the old state or the snapshot, nothing in between. The snapshot is kept, so you can roll back to it again.
+* **Checked** — a corrupt database isn't snapshotted, and a corrupt snapshot is refused without touching the database.
+* **Plain files** — snapshots live in `<db>.snapshots/<name>.citron`, and each one is a valid database you can open directly. Perl, C and Python share them.
+
 ### Caching
 
 A process keeps the records it last read or wrote. Each operation still reads the file under its lock, but it only parses the file again if the bytes changed, so writes from other processes are always seen. Repeated reads and searches in one process (the REPL, a script embedding CitronDB) skip the parsing, which is most of the cost.
@@ -147,6 +175,10 @@ All functions die with a message on corruption or I/O errors.
 | `list_values()`             | Returns all pairs as `{ key => decoded value }`                    |
 | `export_json($file)`        | Writes all pairs to a JSON file; returns the count                 |
 | `import_json($file)`        | Merges a JSON object into the database in one write; returns the count |
+| `create_snapshot($name)`    | Saves a snapshot; without a name it's numbered. Returns the name   |
+| `list_snapshots()`          | Snapshot names: numbers in order, then names                       |
+| `rollback($name)`           | Restores a snapshot; returns 0 if there's no such snapshot         |
+| `delete_snapshot($name)`    | Deletes a snapshot; returns 1 if it existed, else 0                |
 | `to_text($value)`           | Formats a value for display                                        |
 | `get_all()`                 | Prints all key-value pairs                                         |
 | `print_data($key)`          | Prints a value                                                     |
@@ -254,6 +286,10 @@ Include `citron.h`. Calls return `CITRON_OK` (0) or a result ≥ 0, or a negativ
 | `citron_import(db, json)`                     | —               | Merges a JSON object string in one write                         |
 | `citron_export_json(db, file)`                | `export_json`   | Writes a pretty-printed JSON file; returns the count             |
 | `citron_import_json(db, file)`                | `import_json`   | Merges a JSON file in one write; returns the count               |
+| `citron_snapshot(db, name, &out_name)`        | `create_snapshot` | Saves a snapshot; `name` NULL numbers it                       |
+| `citron_snapshots(db, &names, &count)`        | `list_snapshots`  | Snapshot names as a NULL-terminated array                      |
+| `citron_rollback(db, name)`                   | `rollback`        | Restores a snapshot; returns 1, or 0 if it doesn't exist       |
+| `citron_drop_snapshot(db, name)`              | `delete_snapshot` | Returns 1 if it existed, else 0                                |
 | `citron_free(p)` / `citron_free_keys(keys)`   |                 | Free what the library returned                                   |
 
 ```c
@@ -298,6 +334,8 @@ with citron.open("app.citron") as db:
 | `delete(key)`, `exists(key)`                               | `delete_data`, `exists_data` |
 | `list()`, `list_values()`, `keys()`                        | `list`, `list_values`        |
 | `export_json(file)`, `import_json(file)`, `import_dict(d)` | `export_json`, `import_json` |
+| `snapshot(name=None)` → name, `snapshots()`                | `create_snapshot`, `list_snapshots` |
+| `rollback(name)`, `drop_snapshot(name)`                    | `rollback`, `delete_snapshot` |
 
 A `Citron` also works like a dict (`db[key]`, `del db[key]`, `in`, `len`, iteration, `items()`). Errors raise `citron.CitronError`, and its `.code` is the C error code.
 
@@ -325,7 +363,7 @@ Drops you into the REPL:
 Initiating CitronDB...
 mainuser.citron
 CitronDB created
-CitronDB v0.5.1 — type 'help' for commands
+CitronDB v0.5.2 — type 'help' for commands
 citron>
 ```
 
@@ -355,6 +393,10 @@ On Windows (cmd/PowerShell), escape the quotes inside JSON on the command line: 
 | `mapreduce <job>`             | Run a map-reduce job (count, wordcount, sum)             |
 | `export <file.json>`          | Write the whole database to a JSON file                  |
 | `import <file.json>`          | Merge a JSON object's keys into the database             |
+| `snapshot [name]`             | Save a snapshot (numbered if no name is given)           |
+| `snapshots`                   | List snapshots                                           |
+| `rollback <snapshot>`         | Restore the database to that snapshot                    |
+| `dropsnapshot <snapshot>`     | Delete a snapshot (`(integer) 1` if it existed, else `0`) |
 | `help`                        | Print available commands                                 |
 | `exit`                        | Exit the REPL                                            |
 
@@ -368,6 +410,18 @@ From the project root:
 prove test/
 ```
 
+What the suite checks:
+
+| Criterion     | What's verified                                                                 | Tests |
+| ------------- | ------------------------------------------------------------------------------- | ----- |
+| CRUD          | Every operation against a missing key, JSON null, falsy values and normal values; null at paths vs missing fields | `crud.t`, `api.t`, `cli.t` |
+| Durability    | Writer processes are killed at random points: the file is always valid, every acknowledged write survives a restart, and a multi-key write lands whole or not at all | `durability.t` |
+| Concurrency   | Separate processes writing the same and different keys lose nothing, readers never see a partial file, concurrent snapshots never share a number (Perl and C together too) | `concurrency.t`, `test_interop.py` |
+| Recovery      | Rollback restores the exact bytes of a snapshot. Killed mid-rollback, the database is exactly the old state or the snapshot. Corrupt snapshots are refused | `snapshot.t`, `recovery.t` |
+| Compatibility | Real files written by v0.3 (format 1) and v0.4 (format 2) read correctly and upgrade without loss. This version writes the same bytes as v0.4, and newer formats are refused untouched | `compat.t`, `format.t` |
+
+Crashes are simulated by killing processes (SIGKILL / TerminateProcess), which runs no cleanup. Power loss can't be simulated in a test; it's what the fsync before every rename is for. The fixtures in `test/fixtures/` were written by those releases' own code (`test/fixtures/generate.perl`).
+
 `test/bindings.t` builds the C library and runs the C tests (`test/c`) and the Python tests (`test/python3`), including the Perl interop suite. It skips itself when `make` or a C compiler isn't available. To run the parts separately:
 
 ```bash
@@ -377,11 +431,12 @@ python -m unittest discover test/python3
 
 ## Current Limitations
 
-CitronDB v0.5.1 is intentionally simple.
+CitronDB v0.5.2 is intentionally simple.
 
 * The entire database is read before modifying it.
 * The entire database is written back after modification.
 * Search indexes live in memory and are rebuilt per process; they aren't stored in the file.
+* Each snapshot is a full copy of the database file.
 * There is currently no networking.
 * `$host` and `$port` are reserved for future use.
 

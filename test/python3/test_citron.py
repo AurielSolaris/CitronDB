@@ -179,8 +179,59 @@ class CitronTest(unittest.TestCase):
             db.set("k", 1)
         self.assertEqual(self.db.get("k"), 1)
 
+    def test_snapshots(self):
+        self.assertEqual(self.db.snapshots(), [])
+        self.db["a"] = 1
+        self.assertEqual(self.db.snapshot(), "1")
+        self.db["a"] = 2
+        self.assertEqual(self.db.snapshot("beforeMigration"), "beforeMigration")
+        self.assertEqual(self.db.snapshot(), "2")
+        self.assertEqual(self.db.snapshots(), ["1", "2", "beforeMigration"])
+
+        self.db["a"] = 3
+        self.assertTrue(self.db.rollback("1"))
+        self.assertEqual(self.db["a"], 1)
+        self.assertTrue(self.db.rollback("beforeMigration"))
+        self.assertEqual(self.db["a"], 2)
+        self.assertFalse(self.db.rollback("nope"))
+        self.assertFalse(self.db.rollback("../x"))
+
+        self.assertTrue(self.db.drop_snapshot("2"))
+        self.assertFalse(self.db.drop_snapshot("2"))
+        self.assertEqual(self.db.snapshot(), "3", "numbers are never reused")
+
+    def test_snapshot_names_are_checked(self):
+        self.db.snapshot("v1")
+        for bad in ("v1", "42", "a-b", "../x", "", "café"):
+            with self.assertRaises(citron.CitronError) as cm:
+                self.db.snapshot(bad)
+            self.assertEqual(cm.exception.code, -4)
+
+    def test_rollback_restores_exact_bytes(self):
+        self.db.set("user", {"name": "Ada"})
+        self.db.snapshot("one")
+        with open(self.path, "rb") as f:
+            one = f.read()
+        self.db.import_dict({str(i): i for i in range(100)})
+        self.db.rollback("one")
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), one)
+
+    def test_reads_files_from_old_releases(self):
+        fixtures = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
+        expected = {"name": "Ada Lovelace", "greeting": "hello world", "unicode": "café 🍋",
+                    "empty": ""}
+        for release, quoted, count in (("v0.3", '"02139"', "42"), ("v0.4", "02139", 42)):
+            path = os.path.join(self.dir, release + ".citron")
+            shutil.copy(os.path.join(fixtures, release + ".citron"), path)
+            with citron.open(path) as db:
+                for key, value in expected.items():
+                    self.assertEqual(db[key], value, release + " " + key)
+                self.assertEqual(db["quoted"], quoted, release)
+                self.assertEqual(db["count"], count, release)
+
     def test_version(self):
-        self.assertEqual(citron.version(), "0.5.1")
+        self.assertEqual(citron.version(), "0.5.2")
 
 
 if __name__ == "__main__":

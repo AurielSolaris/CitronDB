@@ -39,6 +39,10 @@ while (my $line = <$in>) {
         if ($op eq "exists") { return (citron::exists_data(@args)) }
         if ($op eq "export") { return (citron::export_json(@args)) }
         if ($op eq "import") { return (citron::import_json(@args)) }
+        if ($op eq "snapshot") { return (unpack("H*", citron::create_snapshot(length $args[0] ? $args[0] : undef))) }
+        if ($op eq "snapshots") { return (unpack("H*", join(",", citron::list_snapshots()))) }
+        if ($op eq "rollback") { return (citron::rollback(@args)) }
+        if ($op eq "dropsnapshot") { return (citron::delete_snapshot(@args)) }
         die "unknown op '$op'\n";
     };
     @out = ("!") if $@;

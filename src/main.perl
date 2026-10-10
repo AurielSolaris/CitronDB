@@ -71,6 +71,8 @@ my %usage = (
     mapreduce => "mapreduce <job>",
     export    => "export <file.json>",
     import    => "import <file.json>",
+    rollback  => "rollback <snapshot>",
+    dropsnapshot => "dropsnapshot <snapshot>",
 );
 
 sub run_command {
@@ -122,10 +124,26 @@ sub run_command {
     } elsif($cmd eq "import") {
         my $count = citron::import_json($key);
         print "Imported $count records from $key\n";
+    } elsif($cmd eq "snapshot") {
+        my $name = citron::create_snapshot($key);
+        print "Saved snapshot '$name'\n";
+    } elsif($cmd eq "snapshots") {
+        my @names = citron::list_snapshots();
+        print @names ? map { "$_\n" } @names : "(empty)\n";
+    } elsif($cmd eq "rollback") {
+        if(citron::rollback($key)) {
+            print "OK\n";
+        } else {
+            print "(error) no such snapshot '$key'\n";
+        }
+    } elsif($cmd eq "dropsnapshot") {
+        print "(integer) ", citron::delete_snapshot($key), "\n";
     } elsif($cmd eq "help") {
-        print "Commands: ", join(", ", (map { $usage{$_} } qw(set get update delete exists search mapreduce export import)), "list", "exit"), "\n";
+        print "Commands: ", join(", ", (map { $usage{$_} } qw(set get update delete exists search mapreduce export import)), "list",
+            "snapshot [name]", "snapshots", (map { $usage{$_} } qw(rollback dropsnapshot)), "exit"), "\n";
         print "Values are JSON (e.g. {\"name\":\"Ada\"}, [1,2], 42, true); anything else is stored as a string.\n";
         print "Paths reach into JSON values: get user:1 address.city, get user:1 tags.0\n";
+        print "Snapshots without a name are numbered 1, 2, 3, ...; names use letters and digits.\n";
     } elsif($cmd eq "exit") {
         print "Goodbye.\n";
         exit 0;
@@ -143,7 +161,7 @@ sub handle_command {
 if(defined cli::arguments(0)) {
     handle_command(cli::arguments(0), cli::arguments(1), cli::arguments(2));
 } else {
-    print "CitronDB v0.5.1 — type 'help' for commands\n";
+    print "CitronDB v0.5.2 — type 'help' for commands\n";
     while(1) {
         print "citron> ";
         my $input = <STDIN>;

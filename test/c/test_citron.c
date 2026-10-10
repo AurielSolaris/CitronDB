@@ -8,6 +8,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#  include <direct.h>
+#  define rmdir _rmdir
+#else
+#  include <unistd.h>
+#endif
 
 #include "citron.h"
 
@@ -273,6 +279,86 @@ static void test_nul_in_text(void)
     remove_db("test_c_nul.citron");
 }
 
+static void remove_snapshots(const char *path, char **names)
+{
+    char file[512];
+    size_t i;
+    for (i = 0; names && names[i]; i++) {
+        snprintf(file, sizeof file, "%s.snapshots/%s.citron", path, names[i]);
+        remove(file);
+    }
+    snprintf(file, sizeof file, "%s.snapshots/counter", path);
+    remove(file);
+    snprintf(file, sizeof file, "%s.snapshots", path);
+    rmdir(file);
+}
+
+static void test_snapshots(void)
+{
+    const char *path = "test_c_snap.citron";
+    citron *db = fresh(path);
+    char *name = NULL, **names = NULL;
+    size_t count = 0, len;
+    char *one, *data;
+
+    CHECK(citron_snapshots(db, &names, &count) == CITRON_OK && count == 0 && names[0] == NULL);
+    citron_free_keys(names);
+
+    citron_set(db, "a", "1");
+    CHECK(citron_snapshot(db, NULL, &name) == CITRON_OK && name && !strcmp(name, "1"));
+    citron_free(name);
+    one = read_file(path, &len);
+
+    citron_set(db, "a", "2");
+    CHECK(citron_snapshot(db, "beforeMigration", &name) == CITRON_OK && !strcmp(name, "beforeMigration"));
+    citron_free(name);
+    CHECK(citron_snapshot(db, NULL, NULL) == CITRON_OK); /* 2 */
+
+    CHECK(citron_snapshot(db, "beforeMigration", NULL) == CITRON_EINVALID);
+    CHECK(strstr(citron_errmsg(db), "already exists") != NULL);
+    CHECK(citron_snapshot(db, "42", NULL) == CITRON_EINVALID);
+    CHECK(citron_snapshot(db, "a-b", NULL) == CITRON_EINVALID);
+    CHECK(citron_snapshot(db, "../x", NULL) == CITRON_EINVALID);
+    CHECK(citron_snapshot(db, "", NULL) == CITRON_EINVALID);
+
+    CHECK(citron_snapshots(db, &names, &count) == CITRON_OK && count == 3);
+    CHECK(!strcmp(names[0], "1") && !strcmp(names[1], "2") && !strcmp(names[2], "beforeMigration"));
+    citron_free_keys(names);
+
+    citron_set(db, "a", "3");
+    CHECK(citron_rollback(db, "1") == 1);
+    data = read_file(path, &len);
+    CHECK(data && one && !strcmp(data, one));
+    free(data);
+    GET(db, "a", NULL, "1");
+    CHECK(citron_rollback(db, "beforeMigration") == 1);
+    GET(db, "a", NULL, "2");
+    CHECK(citron_rollback(db, "nope") == 0);
+    CHECK(citron_rollback(db, "../x") == 0);
+
+    /* numbers are never reused */
+    CHECK(citron_drop_snapshot(db, "2") == 1);
+    CHECK(citron_drop_snapshot(db, "2") == 0);
+    CHECK(citron_snapshot(db, NULL, &name) == CITRON_OK && !strcmp(name, "3"));
+    citron_free(name);
+
+    /* a corrupt snapshot is refused, database untouched */
+    write_file("test_c_snap.citron.snapshots/bad.citron", "CITRON\0\0\0\2\0\0\0\1", 14);
+    data = read_file(path, &len);
+    CHECK(citron_rollback(db, "bad") == CITRON_ECORRUPT);
+    CHECK(strstr(citron_errmsg(db), "Snapshot 'bad' is unusable") != NULL);
+    one = (free(one), read_file(path, &len));
+    CHECK(data && one && !strcmp(data, one));
+    free(data);
+    free(one);
+
+    CHECK(citron_snapshots(db, &names, NULL) == CITRON_OK);
+    citron_close(db);
+    remove_snapshots(path, names);
+    citron_free_keys(names);
+    remove_db(path);
+}
+
 int main(void)
 {
     test_open();
@@ -283,6 +369,7 @@ int main(void)
     test_export_import_files();
     test_errors();
     test_nul_in_text();
+    test_snapshots();
 
     printf("%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

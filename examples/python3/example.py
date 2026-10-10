@@ -38,6 +38,18 @@ with citron.open("example.citron") as db:
     print("nothing:", db.lookup("nothing"), "ghost:", db.lookup("ghost"))
     del db["nothing"]
 
+    # snapshots: save the data, change it, roll back to exactly that version.
+    # Without a name a snapshot is numbered "1", "2", "3", ...
+    db.drop_snapshot("beforeCleanup")  # so the example can run again
+    db.snapshot("beforeCleanup")
+    number = db.snapshot()
+    print("\nsnapshots: %s (just made %s)" % (", ".join(db.snapshots()), number))
+
+    del db["user:2"]
+    print("after delete, user:2 exists:", "user:2" in db)
+    db.rollback("beforeCleanup")
+    print("after rollback, user:2 exists:", "user:2" in db)
+
     print("\nall records:")
     for key, text in db.list().items():
         print("%s: %s" % (key, text))
