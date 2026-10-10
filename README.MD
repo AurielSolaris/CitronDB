@@ -6,16 +6,35 @@ A lightweight, embeddable key-value store written in Perl.
 
 CitronDB stores JSON values in a single `.citron` file. You talk to it with Redis-style commands; like SQLite, there's no server, just a file.
 
+You can also embed it from **C** and **Python 3** through the bindings in `bindings/`. The Perl implementation is the reference: the bindings follow its behavior and file format, and Perl and the bindings can use the same database at the same time.
+
 ## Project Structure
 
 ```text
 .
+├── bindings/
+│   ├── c/
+│   │   ├── include/citron.h
+│   │   ├── src/citron.c
+│   │   └── Makefile
+│   └── python3/
+│       └── citron/__init__.py
+├── examples/
+│   ├── perl/example.perl
+│   ├── c/example.c
+│   └── python3/example.py
 ├── test/
 │   ├── lib.perl
 │   ├── api.t
 │   ├── format.t
 │   ├── concurrency.t
-│   └── cli.t
+│   ├── cli.t
+│   ├── bindings.t
+│   ├── c/test_citron.c
+│   └── python3/
+│       ├── test_citron.py
+│       ├── test_interop.py
+│       └── perl_ref.perl
 └── src/
     ├── main.perl
     ├── config.perl
@@ -40,6 +59,9 @@ CitronDB stores JSON values in a single `.citron` file. You talk to it with Redi
 * `cli.perl` — Argument parsing
 * `search_*.perl` — Search modules
 * `mapreduce.perl` — Batch map-reduce jobs over stored data
+* `bindings/c/` — C library (the FFI) that implements the file format natively
+* `bindings/python3/` — Python 3 package built on the C library
+* `examples/` — The same walkthrough in Perl, C and Python 3
 * `test/` — Test suite
 
 ## How It Works
@@ -175,6 +197,102 @@ Map-reduce runs as a read-only batch job over the stored data: map each key-valu
 
 Built-in jobs: `count` (record count), `wordcount` (word frequency across values), `sum` (sum of numeric values).
 
+## Bindings
+
+The C library in `bindings/c` is a native implementation of the `.citron` format. It mirrors `citron.perl`:
+
+* the same file format, version 2, and it upgrades version 1 files the same way
+* the same locks on `<db>.lock` (compatible with Perl's `flock`, on Windows too), and the same temp file + fsync + rename writes
+* the same corruption and version errors
+* the same values: input is canonicalised exactly as JSON::PP does it, so `1.50` → `1.5`, `1e3` → `1000`, and sorted keys. Perl and C write byte-identical files.
+
+`test/python3/test_interop.py` runs the same operations through Perl and the bindings and checks that results, database files and exports match byte for byte. When `citron.perl` changes, the bindings follow, and this test is what catches drift.
+
+### Building the C library
+
+```bash
+make -C bindings/c          # build/libcitron.a and build/citron.dll / libcitron.so / libcitron.dylib
+make -C bindings/c test     # C tests
+make -C bindings/c example  # build and run examples/c/example.c
+```
+
+It's one C99 file with no dependencies, so you can also compile `bindings/c/src/citron.c` straight into your project. Define `CITRON_SHARED` when you build or use the Windows DLL.
+
+### C API
+
+Include `citron.h`. Calls return `CITRON_OK` (0) or a result ≥ 0, or a negative error code: `CITRON_EIO`, `CITRON_ECORRUPT`, `CITRON_EVERSION`, `CITRON_EINVALID`, `CITRON_ENOMEM`. `citron_errmsg(db)` says what went wrong.
+
+| Function                                      | Perl equivalent | Description                                                      |
+| --------------------------------------------- | --------------- | ---------------------------------------------------------------- |
+| `citron_open(path, &db)` / `citron_close(db)` | `open_db()`     | Opens (creating if missing); `path` NULL means `mainuser.citron` |
+| `citron_set(db, key, value)`                  | `set_data`      | Inserts or replaces (`value` is JSON or plain text)              |
+| `citron_update(db, key, value)`               | `update_data`   | Replaces an existing key; returns 0 if it doesn't exist          |
+| `citron_delete(db, key)`                      | `delete_data`   | Returns 1 if the key existed, else 0                             |
+| `citron_exists(db, key)`                      | `exists_data`   | Returns 1 or 0                                                   |
+| `citron_get(db, key, path, &out, &len)`       | `lookup`        | Returns 1 and the value as JSON text, or 0 if missing            |
+| `citron_get_text(db, key, path, &out, &len)`  | `to_text`       | Same, but strings come back unquoted                             |
+| `citron_keys(db, &keys, &count)`              | `list`          | All keys, sorted, as a NULL-terminated array                     |
+| `citron_dump(db, &out)`                       | `list_values`   | The whole database as one JSON object                            |
+| `citron_import(db, json)`                     | —               | Merges a JSON object string in one write                         |
+| `citron_export_json(db, file)`                | `export_json`   | Writes a pretty-printed JSON file; returns the count             |
+| `citron_import_json(db, file)`                | `import_json`   | Merges a JSON file in one write; returns the count               |
+| `citron_free(p)` / `citron_free_keys(keys)`   |                 | Free what the library returned                                   |
+
+```c
+#include "citron.h"
+
+citron *db;
+char *name;
+
+citron_open("app.citron", &db);
+citron_set(db, "user:1", "{\"name\":\"Ada\",\"tags\":[\"math\"]}");
+if (citron_get_text(db, "user:1", "name", &name, NULL) == 1) {
+    puts(name);                       /* Ada */
+    citron_free(name);
+}
+citron_close(db);
+```
+
+A handle must not be used from two threads at once; open one per thread.
+
+### Python 3
+
+`bindings/python3/citron` is a ctypes package and needs no compiler. It loads the C library from `CITRON_LIB`, then from the package directory, then from `bindings/c/build/`.
+
+```python
+import citron
+
+with citron.open("app.citron") as db:
+    db.set("user:1", {"name": "Ada", "tags": ["math"]})   # Python values stored as JSON
+    db.get("user:1", "tags.0")                             # 'math'
+    db.set_raw("greeting", "hello world")                  # CLI rule: JSON if it parses, else a string
+    db["count"] = 42
+    "count" in db, len(db), db.keys()
+```
+
+| Method                                                     | Perl equivalent              |
+| ---------------------------------------------------------- | ---------------------------- |
+| `set(key, value)` / `set_raw(key, text)`                   | `set_data`                   |
+| `get(key, path=None, default=None)`                        | `get_data`                   |
+| `lookup(key, path=None)` → `(found, value)`                | `lookup`                     |
+| `get_text(key, path=None)`                                 | `to_text(get_data(...))`     |
+| `update(key, value)` / `update_raw(key, text)`             | `update_data`                |
+| `delete(key)`, `exists(key)`                               | `delete_data`, `exists_data` |
+| `list()`, `list_values()`, `keys()`                        | `list`, `list_values`        |
+| `export_json(file)`, `import_json(file)`, `import_dict(d)` | `export_json`, `import_json` |
+
+A `Citron` also works like a dict (`db[key]`, `del db[key]`, `in`, `len`, iteration, `items()`). Errors raise `citron.CitronError`, and its `.code` is the C error code.
+
+## Examples
+
+The same walkthrough in each language. Run them from the project root:
+
+```bash
+perl examples/perl/example.perl
+make -C bindings/c && python examples/python3/example.py
+make -C bindings/c example
+```
+
 ## Usage
 
 From the project root:
@@ -230,6 +348,13 @@ From the project root:
 
 ```bash
 prove test/
+```
+
+`test/bindings.t` builds the C library and runs the C tests (`test/c`) and the Python tests (`test/python3`), including the Perl interop suite. It skips itself when `make` or a C compiler isn't available. To run the parts separately:
+
+```bash
+make -C bindings/c test
+python -m unittest discover test/python3
 ```
 
 ## Current Limitations

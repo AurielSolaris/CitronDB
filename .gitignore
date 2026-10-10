@@ -3,6 +3,16 @@
 *.citron.tmp
 *.citron.lock
 
+# Files the examples write
+example.json
+
+# C library build output
+bindings/c/build/
+
+# Python
+__pycache__/
+*.py[cod]
+
 # OS / editor junk
 .DS_Store
 Thumbs.db

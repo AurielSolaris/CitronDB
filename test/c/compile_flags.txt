@@ -1,0 +1,2 @@
+-I../../bindings/c/include
+-std=c99
