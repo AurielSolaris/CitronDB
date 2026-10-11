@@ -13,6 +13,10 @@ example.json
 # C library build output
 bindings/c/build/
 
+# PHP
+bindings/php/vendor/
+bindings/php/composer.lock
+
 # Python
 __pycache__/
 *.py[cod]

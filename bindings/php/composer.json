@@ -1,0 +1,24 @@
+{
+    "name": "citrondb/citron",
+    "description": "CitronDB for PHP: a native implementation of the CitronDB file format, with a Laravel cache store",
+    "type": "library",
+    "keywords": ["citrondb", "key-value", "database", "embedded", "cache", "laravel"],
+    "require": {
+        "php": "^8.1"
+    },
+    "suggest": {
+        "illuminate/cache": "For the Laravel cache store (Citron\\Laravel\\CitronStore)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Citron\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Citron\\Laravel\\CitronServiceProvider"
+            ]
+        }
+    }
+}

@@ -6,7 +6,9 @@ A lightweight, embeddable key-value store written in Perl.
 
 CitronDB stores JSON values in a single `.citron` file. You talk to it with Redis-style commands; like SQLite, there's no server, just a file.
 
-You can also embed it from **C** and **Python 3** through the bindings in `bindings/`. The Perl implementation is the reference: the bindings follow its behavior and file format, and Perl and the bindings can use the same database at the same time.
+You can also embed it from **C**, **Python 3** and **PHP** through the bindings in `bindings/`. The Perl implementation is the reference: the bindings follow its behavior and file format, and Perl and the bindings can use the same database at the same time.
+
+[DOCS.MD](DOCS.MD) is the full reference: the exact rules for values, paths and the file, the Perl API, and how each binding maps onto it.
 
 ## Project Structure
 
@@ -17,12 +19,18 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 │   │   ├── include/citron.h
 │   │   ├── src/citron.c
 │   │   └── Makefile
-│   └── python3/
-│       └── citron/__init__.py
+│   ├── python3/
+│   │   └── citron/__init__.py
+│   └── php/
+│       ├── src/CitronDB.php
+│       ├── src/Json.php
+│       ├── src/Laravel/
+│       └── composer.json
 ├── examples/
 │   ├── perl/example.perl
 │   ├── c/example.c
-│   └── python3/example.py
+│   ├── python3/example.py
+│   └── php/example.php
 ├── test/
 │   ├── lib.perl
 │   ├── worker.perl
@@ -39,10 +47,14 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 │   ├── bindings.t
 │   ├── fixtures/
 │   ├── c/test_citron.c
-│   └── python3/
-│       ├── test_citron.py
-│       ├── test_interop.py
-│       └── perl_ref.perl
+│   ├── python3/
+│   │   ├── test_citron.py
+│   │   ├── test_interop.py
+│   │   └── perl_ref.perl
+│   └── php/
+│       ├── test_citron.php
+│       ├── test_interop.php
+│       └── test_laravel.php
 └── src/
     ├── main.perl
     ├── config.perl
@@ -71,7 +83,8 @@ You can also embed it from **C** and **Python 3** through the bindings in `bindi
 * `mapreduce.perl` — Batch map-reduce jobs over stored data
 * `bindings/c/` — C library (the FFI) that implements the file format natively
 * `bindings/python3/` — Python 3 package built on the C library
-* `examples/` — The same walkthrough in Perl, C and Python 3
+* `bindings/php/` — Pure-PHP implementation of the file format, with a Laravel cache store
+* `examples/` — The same walkthrough in Perl, C, Python 3 and PHP
 * `test/` — Test suite
 
 ## How It Works
@@ -130,7 +143,7 @@ OK
 * **Numbered or named** — without a name, a snapshot gets the next number, counting up from 1 with no upper limit. A number is never reused, even after its snapshot is dropped. Names are letters and digits with at least one letter, so they can't clash with numbers. A name that's taken is refused, never overwritten.
 * **Exact and atomic** — a snapshot is a byte-for-byte copy of the database. Rollback swaps it in with the same temp file + fsync + rename as any write, under the write lock. A crash mid-rollback leaves either the old state or the snapshot, nothing in between. The snapshot is kept, so you can roll back to it again.
 * **Checked** — a corrupt database isn't snapshotted, and a corrupt snapshot is refused without touching the database.
-* **Plain files** — snapshots live in `<db>.snapshots/<name>.citron`, and each one is a valid database you can open directly. Perl, C and Python share them.
+* **Plain files** — snapshots live in `<db>.snapshots/<name>.citron`, and each one is a valid database you can open directly. Perl, C, Python and PHP share them.
 
 ### Caching
 
@@ -232,7 +245,7 @@ Most searches don't walk every record. `search_index.perl` builds in-memory inde
 
 Substring, regex and fuzzy matches can sit anywhere in a string, so a sorted index can't narrow them down. They scan, but over cached text, with nothing re-read or re-parsed between searches.
 
-Search is part of the Perl implementation; the C and Python bindings don't include it yet.
+Search is part of the Perl implementation; the C, Python and PHP bindings don't include it yet.
 
 ### `mapreduce`
 
@@ -249,14 +262,14 @@ Built-in jobs: `count` (record count), `wordcount` (word frequency across values
 
 ## Bindings
 
-The C library in `bindings/c` is a native implementation of the `.citron` format. It mirrors `citron.perl`:
+The C library in `bindings/c` and the PHP package in `bindings/php` are native implementations of the `.citron` format (the Python package wraps the C library). They mirror `citron.perl`:
 
 * the same file format, version 2, and it upgrades version 1 files the same way
-* the same locks on `<db>.lock` (compatible with Perl's `flock`, on Windows too), and the same temp file + fsync + rename writes
+* the same locks on `<db>.lock` (compatible with Perl's `flock`, on Windows too), and the same temp file + fsync + rename writes. On Windows, share a database with a native Perl such as Strawberry Perl: Git Bash's MSYS Perl locks files in a way native programs can't see
 * the same corruption and version errors
-* the same values: input is canonicalised exactly as JSON::PP does it, so `1.50` → `1.5`, `1e3` → `1000`, and sorted keys. Perl and C write byte-identical files.
+* the same values: input is canonicalised exactly as JSON::PP does it, so `1.50` → `1.5`, `1e3` → `1000`, and sorted keys. Perl, C and PHP write byte-identical files.
 
-`test/python3/test_interop.py` runs the same operations through Perl and the bindings and checks that results, database files and exports match byte for byte. When `citron.perl` changes, the bindings follow, and this test is what catches drift.
+`test/python3/test_interop.py` (C and Python) and `test/php/test_interop.php` (PHP) run the same operations through Perl and the bindings and check that results, database files and exports match byte for byte. When `citron.perl` changes, the bindings follow, and this test is what catches drift.
 
 ### Building the C library
 
@@ -339,6 +352,48 @@ with citron.open("app.citron") as db:
 
 A `Citron` also works like a dict (`db[key]`, `del db[key]`, `in`, `len`, iteration, `items()`). Errors raise `citron.CitronError`, and its `.code` is the C error code.
 
+### PHP
+
+`bindings/php` is pure PHP 8.1+: no Perl, no compiled library, no FFI. Install it with Composer (`citrondb/citron`, namespace `Citron\`) or require `bindings/php/src/CitronDB.php`.
+
+```php
+use Citron\CitronDB;
+
+$db = CitronDB::open('app.citron');
+$db->set('user:1', ['name' => 'Ada', 'tags' => ['math']]);  // PHP values stored as JSON
+$db->get('user:1', 'tags.0');                               // 'math'
+$db->setRaw('greeting', 'hello world');                     // CLI rule: JSON if it parses, else a string
+$db['count'] = 42;                                          // ArrayAccess, count(), foreach
+```
+
+| Method                                                       | Perl equivalent                     |
+| ------------------------------------------------------------ | ----------------------------------- |
+| `set($key, $value)` / `setRaw($key, $text)`                  | `set_data`                          |
+| `get($key, $path = null, $default = null)`                   | `get_data`                          |
+| `lookup($key, $path = null)` → `[found, value]`              | `lookup`                            |
+| `getText($key, $path)` / `getJson($key, $path)`              | `to_text(get_data(...))` / stored JSON |
+| `update($key, $value)` / `updateRaw($key, $text)`            | `update_data`                       |
+| `delete($key)`, `exists($key)`                               | `delete_data`, `exists_data`        |
+| `list()`, `all()`, `keys()`, `dump()`                        | `list`, `list_values`               |
+| `exportJson($file)`, `importJson($file)`, `import($json)`    | `export_json`, `import_json`        |
+| `modify(fn (&$records))`, `read(fn ($records))`              | `modify`, `read_only`               |
+| `snapshot($name = null)`, `snapshots()`                      | `create_snapshot`, `list_snapshots` |
+| `rollback($name)`, `dropSnapshot($name)`                     | `rollback`, `delete_snapshot`       |
+
+Errors throw `Citron\CitronException`, whose code matches the C error codes.
+
+It includes a **Laravel cache store**. The `citron` driver, registered by `Citron\Laravel\CitronServiceProvider` through package discovery, supports expiry, tags, atomic `add`/`increment` and locks:
+
+```php
+// config/cache.php
+'citron' => [
+    'driver' => 'citron',
+    'path' => env('CITRON_CACHE_PATH', storage_path('framework/cache/cache.citron')),
+],
+```
+
+See [DOCS.MD](DOCS.MD#php) for how PHP values map to JSON, atomic `modify`, and how the store keeps items.
+
 ## Examples
 
 The same walkthrough in each language. Run them from the project root:
@@ -347,6 +402,7 @@ The same walkthrough in each language. Run them from the project root:
 perl examples/perl/example.perl
 make -C bindings/c && python examples/python3/example.py
 make -C bindings/c example
+php examples/php/example.php
 ```
 
 ## Usage
@@ -416,17 +472,20 @@ What the suite checks:
 | ------------- | ------------------------------------------------------------------------------- | ----- |
 | CRUD          | Every operation against a missing key, JSON null, falsy values and normal values; null at paths vs missing fields | `crud.t`, `api.t`, `cli.t` |
 | Durability    | Writer processes are killed at random points: the file is always valid, every acknowledged write survives a restart, and a multi-key write lands whole or not at all | `durability.t` |
-| Concurrency   | Separate processes writing the same and different keys lose nothing, readers never see a partial file, concurrent snapshots never share a number (Perl and C together too) | `concurrency.t`, `test_interop.py` |
+| Concurrency   | Separate processes writing the same and different keys lose nothing, readers never see a partial file, concurrent snapshots never share a number (Perl, C and PHP together too) | `concurrency.t`, `test_interop.py`, `test_interop.php` |
 | Recovery      | Rollback restores the exact bytes of a snapshot. Killed mid-rollback, the database is exactly the old state or the snapshot. Corrupt snapshots are refused | `snapshot.t`, `recovery.t` |
 | Compatibility | Real files written by v0.3 (format 1) and v0.4 (format 2) read correctly and upgrade without loss. This version writes the same bytes as v0.4, and newer formats are refused untouched | `compat.t`, `format.t` |
 
 Crashes are simulated by killing processes (SIGKILL / TerminateProcess), which runs no cleanup. Power loss can't be simulated in a test; it's what the fsync before every rename is for. The fixtures in `test/fixtures/` were written by those releases' own code (`test/fixtures/generate.perl`).
 
-`test/bindings.t` builds the C library and runs the C tests (`test/c`) and the Python tests (`test/python3`), including the Perl interop suite. It skips itself when `make` or a C compiler isn't available. To run the parts separately:
+`test/bindings.t` builds the C library and runs the C tests (`test/c`), the Python tests (`test/python3`) and the PHP tests (`test/php`), including the Perl interop suites. The C and Python parts are skipped when `make` or a C compiler isn't available, and the PHP part when `php` isn't. The Laravel store tests need `illuminate/cache`, `illuminate/container` and `illuminate/config` (point `CITRON_LARAVEL_AUTOLOAD` at a `vendor/autoload.php` that has them) and skip otherwise. To run the parts separately:
 
 ```bash
 make -C bindings/c test
 python -m unittest discover test/python3
+php test/php/test_citron.php
+php test/php/test_interop.php       # CITRON_PERL=<perl> picks the Perl to compare against
+php test/php/test_laravel.php
 ```
 
 ## Current Limitations
